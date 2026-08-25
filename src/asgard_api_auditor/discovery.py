@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from pathlib import Path
 
 from . import __version__
 from .constants import ENDPOINT_DISCOVERY_SCHEMA_VERSION
@@ -12,7 +11,7 @@ from .detectors.laravel import detect_laravel_routes
 from .discovery_types import DiscoveryIssue, EndpointDiscovery
 from .discovery_utils import iter_source_files
 from .inventory import inventory_repository
-from .models import AuditTarget, DetectorCoverage, EndpointFinding, Evidence
+from .models import AuditTarget, DetectorCoverage, EndpointFinding
 
 _SUPPORTED_SERVER_FRAMEWORKS = {"laravel"}
 
@@ -68,7 +67,10 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
                 files_scanned=detector_coverage.files_scanned,
                 supported_patterns=detector_coverage.supported_patterns,
                 unsupported_patterns=tuple(
-                    sorted(set(detector_coverage.unsupported_patterns) | {"laravel_detected_no_routes"})
+                    sorted(
+                        set(detector_coverage.unsupported_patterns)
+                        | {"laravel_detected_no_routes"}
+                    )
                 ),
                 notes=detector_coverage.notes,
             )
@@ -131,7 +133,9 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
                 category="integration",
                 status="partial",
                 supported_patterns=(),
-                unsupported_patterns=tuple(sorted({item.name for item in inventory.integration_surfaces})),
+                unsupported_patterns=tuple(
+                    sorted({item.name for item in inventory.integration_surfaces})
+                ),
             )
         )
 
@@ -143,8 +147,14 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
     )
 
     notes = [
-        "v0.4 discovers literal HTTP routes/calls and fails closed on dynamic or unsupported patterns.",
-        "discovery_complete is not equivalent to final audit status; OpenAPI generation and contract enrichment follow later.",
+        (
+            "v0.4 discovers literal HTTP routes/calls and fails closed on dynamic or "
+            "unsupported patterns."
+        ),
+        (
+            "discovery_complete is not equivalent to final audit status; OpenAPI generation "
+            "and contract enrichment follow later."
+        ),
     ]
     return EndpointDiscovery(
         schema_version=ENDPOINT_DISCOVERY_SCHEMA_VERSION,
