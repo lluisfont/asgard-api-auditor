@@ -5,8 +5,8 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from . import __version__
 from .inventory import InventoryError, inventory_repository, inventory_to_dict
