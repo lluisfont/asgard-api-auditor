@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from asgard_api_auditor.inventory import InventoryError, inventory_repository
-from asgard_api_auditor.models import AuditTarget
+from asgard_api_auditor.models import AuditTarget, TechnologyDetection
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -35,8 +35,8 @@ def _init_repo(root: Path, files: dict[str, str]) -> Path:
     return repo
 
 
-def _names(items: list[object]) -> set[str]:
-    return {getattr(item, "name") for item in items}
+def _names(items: list[TechnologyDetection]) -> set[str]:
+    return {item.name for item in items}
 
 
 class TechnicalInventoryTests(unittest.TestCase):
