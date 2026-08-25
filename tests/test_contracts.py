@@ -4,7 +4,6 @@ from pathlib import Path
 
 from asgard_api_auditor.constants import FINDINGS_SCHEMA_VERSION, OPENAPI_VERSION
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
