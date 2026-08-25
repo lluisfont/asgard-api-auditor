@@ -274,7 +274,7 @@ def _render_report(audit_id: str, discovery: EndpointDiscovery) -> str:
         "",
         "## Verdict",
         "",
-        "**PARTIAL** — structural API discovery artifacts were generated and validated, but request/response/security contract enrichment is not implemented in v0.5.0.",
+        "**PARTIAL** — structural API discovery artifacts were generated and validated, but request/response/security contract enrichment is not implemented in v0.5.x.",
         "",
         "## Proven surface",
         "",
@@ -297,7 +297,7 @@ def _render_report(audit_id: str, discovery: EndpointDiscovery) -> str:
             "",
             "## OpenAPI semantics",
             "",
-            "The generated OpenAPI describes only proven exposed HTTP paths/methods. Unknown payload and response schemas are intentionally not invented.",
+            "The generated OpenAPI describes only proven exposed HTTP paths/methods. Equivalent templates that differ only by source parameter names are canonicalized without discarding their original source paths.",
             "",
         ]
     )
@@ -308,11 +308,53 @@ def _operation_id(endpoint: EndpointFinding) -> str:
     return f"{endpoint.method.lower()}_{hashlib.sha256(endpoint.endpoint_id.encode()).hexdigest()[:12]}"
 
 
+def _path_shape(path: str) -> str:
+    return _PATH_PARAMETER.sub("{}", path)
+
+
+def _path_parameter_names(path: str) -> list[str]:
+    return [match.group("name") for match in _PATH_PARAMETER.finditer(path)]
+
+
+def _canonical_path(path: str) -> str:
+    index = 0
+
+    def replace(_: re.Match[str]) -> str:
+        nonlocal index
+        index += 1
+        return f"{{param{index}}}"
+
+    return _PATH_PARAMETER.sub(replace, path)
+
+
+def _group_openapi_paths(
+    endpoints: list[EndpointFinding],
+) -> list[tuple[str, list[str], list[EndpointFinding]]]:
+    by_shape: dict[str, list[EndpointFinding]] = {}
+    for endpoint in endpoints:
+        by_shape.setdefault(_path_shape(endpoint.path), []).append(endpoint)
+
+    groups: list[tuple[str, list[str], list[EndpointFinding]]] = []
+    for _shape, group in by_shape.items():
+        source_paths = sorted({endpoint.path for endpoint in group})
+        canonical_path = source_paths[0] if len(source_paths) == 1 else _canonical_path(source_paths[0])
+        methods: dict[str, EndpointFinding] = {}
+        for endpoint in group:
+            previous = methods.get(endpoint.method)
+            if previous is not None and previous.path != endpoint.path:
+                raise ValueError(
+                    "OpenAPI cannot represent multiple source routes with the same template shape "
+                    f"and HTTP method {endpoint.method}: {previous.path!r} vs {endpoint.path!r}"
+                )
+            methods[endpoint.method] = endpoint
+        groups.append((canonical_path, source_paths, sorted(methods.values(), key=lambda item: item.method)))
+
+    return sorted(groups, key=lambda item: item[0])
+
+
 def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
     exposed = [item for item in discovery.endpoints if item.direction == "exposed"]
-    by_path: dict[str, list[EndpointFinding]] = {}
-    for item in exposed:
-        by_path.setdefault(item.path, []).append(item)
+    groups = _group_openapi_paths(exposed)
 
     lines = [
         f"openapi: {OPENAPI_VERSION}",
@@ -325,13 +367,23 @@ def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
         "x-asgard-contract-enrichment: partial",
         "paths:",
     ]
-    if not by_path:
+    if not groups:
         lines[-1] = "paths: {}"
         return redact_text("\n".join(lines) + "\n")
 
-    for path in sorted(by_path):
+    for path, source_paths, endpoints in groups:
         lines.append(f"  {json.dumps(path)}:")
-        for endpoint in sorted(by_path[path], key=lambda item: item.method):
+        if len(source_paths) > 1:
+            lines.append("    x-asgard-source-paths:")
+            lines.extend(f"      - {json.dumps(source_path)}" for source_path in source_paths)
+        canonical_parameters = _path_parameter_names(path)
+        for endpoint in endpoints:
+            source_parameters = _path_parameter_names(endpoint.path)
+            if len(canonical_parameters) != len(source_parameters):
+                raise ValueError(
+                    f"Canonical path parameter count mismatch for {endpoint.method} {endpoint.path}"
+                )
+            canonicalized = endpoint.path != path
             lines.extend(
                 [
                     f"    {endpoint.method.lower()}:",
@@ -340,6 +392,8 @@ def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
                     "      description: \"Discovered from source. Request/response/authentication details are not yet reconstructed.\"",
                     f"      x-asgard-endpoint-id: {json.dumps(endpoint.endpoint_id)}",
                     f"      x-asgard-confidence: {json.dumps(endpoint.confidence)}",
+                    f"      x-asgard-source-path: {json.dumps(endpoint.path)}",
+                    f"      x-asgard-path-canonicalized: {str(canonicalized).lower()}",
                 ]
             )
             evidence = [
@@ -349,19 +403,22 @@ def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
             if evidence:
                 lines.append("      x-asgard-evidence:")
                 lines.extend(f"        - {json.dumps(value)}" for value in evidence)
-            parameters = sorted(set(_PATH_PARAMETER.findall(endpoint.path)))
-            if parameters:
+            if canonical_parameters:
                 lines.append("      parameters:")
-                for name in parameters:
+                for canonical_name, source_name in zip(canonical_parameters, source_parameters, strict=True):
                     lines.extend(
                         [
-                            f"        - name: {json.dumps(name)}",
+                            f"        - name: {json.dumps(canonical_name)}",
                             "          in: path",
                             "          required: true",
                             "          schema:",
                             "            type: string",
                         ]
                     )
+                    if canonical_name != source_name:
+                        lines.append(
+                            f"          x-asgard-source-parameter-name: {json.dumps(source_name)}"
+                        )
             lines.extend(
                 [
                     "      responses:",
@@ -385,7 +442,7 @@ def _findings(
             "category": "schema",
             "description": (
                 "Request/response/authentication/authorization contract enrichment is pending; "
-                "v0.5.0 OpenAPI is structural and cannot represent the full behavioral contract."
+                "v0.5.x OpenAPI is structural and cannot represent the full behavioral contract."
             ),
             "impact": "blocking",
             "evidence": [],

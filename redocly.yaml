@@ -7,7 +7,14 @@ rules:
   no-empty-servers: off
   # AS-IS contracts describe observed integration behavior, not API licensing terms.
   info-license: off
+  # Source routes may intentionally distinguish or retain a trailing slash. Preserve
+  # observed behavior and report it as documentation guidance instead of rewriting it.
+  no-path-trailing-slash: warn
+  # Equivalent templates that differ only by parameter names are a real structural
+  # conflict and must remain an error unless the generator canonicalizes them safely.
+  no-identical-paths: error
   operation-operationId: error
   operation-summary: warn
   no-unused-components: warn
+  # Security remains unknown until reconstruction proves it; never invent a scheme.
   security-defined: warn

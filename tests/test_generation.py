@@ -43,6 +43,12 @@ def _repo(root: Path) -> Path:
     return repo
 
 
+def _replace_routes(repo: Path, content: str) -> None:
+    (repo / "routes.php").write_text(content, encoding="utf-8")
+    _git(repo, "add", "routes.php")
+    _git(repo, "commit", "-qm", "route variants")
+
+
 class GenerationTests(unittest.TestCase):
     def test_generate_audit_publishes_valid_primary_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -72,6 +78,44 @@ class GenerationTests(unittest.TestCase):
             self.assertNotIn("consumer.example", openapi)
             self.assertIn("consumer.example", knowledge)
             self.assertIn("x-asgard-contract-enrichment: partial", openapi)
+
+    def test_equivalent_templates_with_distinct_methods_share_canonical_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->get('/pedidos/{idcliente}', $handler);\n"
+                "$app->put('/pedidos/{idpedido}', $handler);\n"
+                "$app->delete('/pedidos/{idpedido}', $handler);\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            openapi = (destination / "openapi.yaml").read_text(encoding="utf-8")
+            self.assertIn('/pedidos/{param1}', openapi)
+            self.assertNotIn('  "/pedidos/{idcliente}":', openapi)
+            self.assertNotIn('  "/pedidos/{idpedido}":', openapi)
+            self.assertIn('x-asgard-source-path: "/pedidos/{idcliente}"', openapi)
+            self.assertIn('x-asgard-source-path: "/pedidos/{idpedido}"', openapi)
+            self.assertIn('x-asgard-source-parameter-name: "idcliente"', openapi)
+            self.assertIn('x-asgard-source-parameter-name: "idpedido"', openapi)
+            self.assertEqual(openapi.count("operationId:"), 3)
+
+    def test_equivalent_templates_with_same_method_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->get('/pedidos/{idcliente}', $handler);\n"
+                "$app->get('/pedidos/{idpedido}', $handler);\n",
+            )
+            destination = root / "audit-output"
+            with self.assertRaisesRegex(ValueError, "same template shape"):
+                generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            self.assertFalse(destination.exists())
 
     def test_findings_keep_contract_enrichment_blocking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
