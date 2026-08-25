@@ -242,6 +242,126 @@ class EndpointDiscoveryTests(unittest.TestCase):
             self.assertFalse(result.discovery_complete)
             self.assertIn("php_curl_url_unresolved", {x.code for x in result.unresolved})
 
+    def test_resolves_simple_php_curl_wrapper_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Client.php": (
+                    "<?php\n"
+                    "class Client {\n"
+                    "  public function run() { return $this->request('GET', 'https://example.com/items'); }\n"
+                    "  private function request($method, $url) { return $this->curlRequest($method, $url); }\n"
+                    "  private function curlRequest($method, $url) {\n"
+                    "    $ch = curl_init($url);\n"
+                    "    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);\n"
+                    "  }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual([("consumed", "GET", "/items")], sorted(_endpoint_set(result)))
+            endpoint = result.endpoints[0]
+            self.assertEqual(endpoint.base_url, "https://example.com")
+            self.assertEqual(len(result.endpoints), 1)
+            self.assertNotIn("php_curl_url_unresolved", {x.code for x in result.unresolved})
+            self.assertTrue(result.discovery_complete)
+
+    def test_resolves_blob_storage_like_php_curl_wrappers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/BlobStorageService.php": (
+                    "<?php\n"
+                    "class BlobStorageService {\n"
+                    "  private $container = '';\n"
+                    "  private $baseUrl = '';\n"
+                    "  public function uploadBlob($blobName, $content) {\n"
+                    "    $url = $this->blobUrl($blobName);\n"
+                    "    return $this->callHttp('PUT', $url, array(), $content);\n"
+                    "  }\n"
+                    "  public function getBlob($blobName) {\n"
+                    "    $url = $this->blobUrl($blobName);\n"
+                    "    return $this->callHttp('GET', $url, array(), null);\n"
+                    "  }\n"
+                    "  public function exists($blobName) {\n"
+                    "    $url = $this->blobUrl($blobName);\n"
+                    "    return $this->callHttp('HEAD', $url, array(), null);\n"
+                    "  }\n"
+                    "  public function deleteBlob($blobName) {\n"
+                    "    $url = $this->blobUrl($blobName);\n"
+                    "    return $this->callHttp('DELETE', $url, array(), null);\n"
+                    "  }\n"
+                    "  protected function callHttp($method, $url, array $flatHeaders, $body) {\n"
+                    "    return $this->callHttpCurl($method, $url, $flatHeaders, $body);\n"
+                    "  }\n"
+                    "  private function callHttpCurl($method, $url, array $flatHeaders, $body) {\n"
+                    "    $ch = curl_init($url);\n"
+                    "    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);\n"
+                    "  }\n"
+                    "  private function blobUrl($blobName) {\n"
+                    "    $segments = explode('/', $blobName);\n"
+                    "    $encoded = array_map('rawurlencode', $segments);\n"
+                    "    return $this->baseUrl . '/' . $this->container . '/' . implode('/', $encoded);\n"
+                    "  }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+            self.assertEqual(
+                {
+                    ("consumed", "DELETE", "/{container}/{blobName}"),
+                    ("consumed", "GET", "/{container}/{blobName}"),
+                    ("consumed", "HEAD", "/{container}/{blobName}"),
+                    ("consumed", "PUT", "/{container}/{blobName}"),
+                },
+                found,
+            )
+            self.assertEqual(4, len(result.endpoints))
+            for endpoint in result.endpoints:
+                self.assertEqual(endpoint.base_url, "$this->baseUrl")
+                self.assertIn(
+                    "Azure Blob Storage URL resolved from local blobUrl helper with dynamic blob identifier.",
+                    endpoint.notes,
+                )
+                self.assertGreaterEqual(len(endpoint.evidence), 4)
+            self.assertNotIn("php_curl_url_unresolved", {x.code for x in result.unresolved})
+            self.assertTrue(result.discovery_complete)
+
+    def test_dynamic_php_wrapper_method_remains_unresolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Client.php": (
+                    "<?php\n"
+                    "class Client {\n"
+                    "  public function run($url) {\n"
+                    "    $m = runtimeMethod();\n"
+                    "    return $this->request($m, $url);\n"
+                    "  }\n"
+                    "  private function request($method, $url) { return $this->curlRequest($method, $url); }\n"
+                    "  private function curlRequest($method, $url) {\n"
+                    "    $ch = curl_init($url);\n"
+                    "    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);\n"
+                    "  }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual([], result.endpoints)
+            self.assertIn("php_curl_url_unresolved", {x.code for x in result.unresolved})
+            self.assertFalse(result.discovery_complete)
+
+    def test_unknown_php_wrapper_target_is_not_resolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Client.php": (
+                    "<?php\n"
+                    "class Client {\n"
+                    "  public function run() { return $this->externalCurl('GET', 'https://example.com/items'); }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual([], result.endpoints)
+
     def test_discover_excludes_audit_and_work_sample(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp), {
