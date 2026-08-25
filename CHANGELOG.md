@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.3 - 2026-08-25
+
+### Added
+
+- PHP cURL discovery can now resolve local, same-class HTTP wrappers through deterministic `$this->method(...)` call chains.
+- Wrapper resolution preserves evidence for the original call site, intermediate wrapper calls, `curl_init(...)`, and local URL construction helpers.
+
+### Fixed
+
+- Warehouse-style Blob Storage calls such as `callHttp(...) -> callHttpCurl(...) -> curl_init($url)` now produce the real HTTP operations instead of a generic unresolved cURL URL.
+- Dynamic wrapper methods, unknown wrapper targets, and unresolved URL/method values continue to fail closed.
+
 ## 0.4.2 - 2026-08-25
 
 ### Fixed

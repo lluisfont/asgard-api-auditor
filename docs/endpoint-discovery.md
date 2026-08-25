@@ -1,4 +1,4 @@
-# Endpoint discovery v0.4.2
+# Endpoint discovery v0.4.3
 
 La fase `discover` convierte el inventario técnico de v0.3 en hallazgos HTTP concretos sin afirmar más de lo que puede demostrar.
 
@@ -35,7 +35,9 @@ Expuestos:
 
 Consumidos: Angular `HttpClient`, Axios, Fetch, Guzzle, Laravel HTTP facade, PHP cURL, Dio y Dart `http` con `Uri.parse` literal.
 
-PHP cURL cubre `curl_init`, `curl_setopt`, `curl_setopt_array([...])` y `curl_setopt_array(array(...))`. Cuando una base es una constante o expresión no resuelta, se conserva como expresión trazable en vez de inventar su valor.
+PHP cURL cubre `curl_init`, `curl_setopt`, `curl_setopt_array([...])`, `curl_setopt_array(array(...))` y wrappers HTTP locales dentro de la misma clase cuando la propagación de parámetros posicionales es determinista. Cuando una base es una constante o expresión no resuelta, se conserva como expresión trazable en vez de inventar su valor.
+
+La resolución de wrappers se limita a llamadas `$this->method(...)`, métodos definidos en la misma clase/archivo, literales, variables locales trazables, concatenaciones deterministas y helpers locales con retorno demostrable. Dispatch dinámico, herencia ambigua, callbacks, reflection, métodos externos o valores incompatibles quedan como `unresolved`.
 
 Integraciones: SOAP se emite en `integrations` con WSDL/operación cuando puede demostrarse. SOAP no se convierte en REST/OpenAPI y mantiene `discovery_complete=false` mientras la extracción WSDL sea parcial.
 
