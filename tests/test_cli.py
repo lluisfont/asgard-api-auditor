@@ -99,22 +99,30 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue(json.loads(stdout.getvalue())["discovery_complete"])
 
-    def test_full_audit_remains_fail_closed(self) -> None:
+    def test_full_audit_generates_artifacts_but_remains_partial(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = _init_repo(Path(tmp))
+            root = Path(tmp)
+            repo = _init_repo(root, with_supported_api=True)
+            output = root / "audit-output"
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
-                code = main(["audit", str(repo)])
-            self.assertEqual(code, 4)
-            self.assertIn("not implemented", stdout.getvalue())
+                code = main(["audit", str(repo), "--output", str(output)])
+            self.assertEqual(code, 3)
+            self.assertIn("Audit status: partial", stdout.getvalue())
+            self.assertTrue((output / "openapi.yaml").is_file())
+            self.assertTrue((output / "api-knowledge.md").is_file())
+            self.assertTrue((output / "findings.json").is_file())
+            self.assertTrue((output / "audit-report.md").is_file())
 
     def test_bare_repository_keeps_backward_compatibility(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = _init_repo(Path(tmp))
+            root = Path(tmp)
+            repo = _init_repo(root)
             stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
+            with contextlib.chdir(root), contextlib.redirect_stdout(stdout):
                 code = main([str(repo)])
-            self.assertEqual(code, 4)
+            self.assertEqual(code, 3)
+            self.assertTrue((root / "output" / "findings.json").is_file())
 
 
 if __name__ == "__main__":
