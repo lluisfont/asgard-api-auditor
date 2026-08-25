@@ -11,14 +11,22 @@ from pathlib import Path
 from asgard_api_auditor.cli import main
 
 
-def _init_repo(root: Path) -> Path:
+def _init_repo(root: Path, *, with_supported_api: bool = False) -> Path:
     repo = root / "repo"
     repo.mkdir()
     subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True)
-    (repo / "app.py").write_text("import requests\n", encoding="utf-8")
-    (repo / "requirements.txt").write_text("requests==2.32.0\n", encoding="utf-8")
+    if with_supported_api:
+        (repo / "package.json").write_text(
+            json.dumps({"dependencies": {"axios": "^1.0.0"}}), encoding="utf-8"
+        )
+        (repo / "api.ts").write_text(
+            "import axios from 'axios';\naxios.get('/health');\n", encoding="utf-8"
+        )
+    else:
+        (repo / "app.py").write_text("import requests\n", encoding="utf-8")
+        (repo / "requirements.txt").write_text("requests==2.32.0\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
     return repo
@@ -48,6 +56,27 @@ class CliTests(unittest.TestCase):
             self.assertTrue(output.exists())
             self.assertEqual(json.loads(output.read_text())["repository"], "repo")
 
+    def test_discover_writes_supported_endpoint_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(Path(tmp), with_supported_api=True)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(["discover", str(repo)])
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertTrue(payload["discovery_complete"])
+            self.assertEqual(payload["endpoints"][0]["method"], "GET")
+            self.assertEqual(payload["endpoints"][0]["path"], "/health")
+
+    def test_discover_returns_partial_exit_code_for_unsupported_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(Path(tmp))
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(["discover", str(repo)])
+            self.assertEqual(code, 3)
+            self.assertFalse(json.loads(stdout.getvalue())["discovery_complete"])
+
     def test_full_audit_remains_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _init_repo(Path(tmp))
@@ -57,7 +86,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 4)
             self.assertIn("not implemented", stdout.getvalue())
 
-    def test_bare_repository_keeps_v02_backward_compatibility(self) -> None:
+    def test_bare_repository_keeps_backward_compatibility(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _init_repo(Path(tmp))
             stdout = io.StringIO()

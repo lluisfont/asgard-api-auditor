@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asgard.local/schemas/endpoint-discovery.schema.json",
+  "title": "ASGARD Endpoint Discovery",
+  "type": "object",
+  "required": [
+    "schema_version", "auditor_version", "repository", "repository_id",
+    "source_ref", "source_commit", "inventory_complete", "discovery_complete",
+    "endpoints", "detectors", "unresolved", "notes"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "auditor_version": {"type": "string", "minLength": 1},
+    "repository": {"type": "string", "minLength": 1},
+    "repository_id": {"type": "string", "minLength": 1},
+    "source_ref": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-fA-F]{7,64}$"},
+    "inventory_complete": {"type": "boolean"},
+    "discovery_complete": {"type": "boolean"},
+    "endpoints": {"type": "array", "items": {"$ref": "#/$defs/endpoint"}},
+    "detectors": {"type": "array", "items": {"$ref": "#/$defs/detector"}},
+    "unresolved": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "required": ["path", "kind"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "end_line": {"type": ["integer", "null"], "minimum": 1},
+        "symbol": {"type": ["string", "null"]},
+        "kind": {"type": "string"},
+        "note": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "endpoint": {
+      "type": "object",
+      "required": ["endpoint_id", "direction", "method", "path", "confidence", "confidence_reason", "evidence"],
+      "properties": {
+        "endpoint_id": {"type": "string", "minLength": 1},
+        "direction": {"enum": ["exposed", "consumed"]},
+        "method": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "api_id": {"type": ["string", "null"]},
+        "api_name": {"type": ["string", "null"]},
+        "base_url": {"type": ["string", "null"]},
+        "provider_repository": {"type": ["string", "null"]},
+        "consumer_repository": {"type": ["string", "null"]},
+        "handler": {"type": ["string", "null"]},
+        "authentication": {"type": ["string", "null"]},
+        "authorization": {"type": ["string", "null"]},
+        "request": {"type": ["object", "null"]},
+        "response": {"type": ["object", "null"]},
+        "confidence": {"enum": ["confirmed", "probable", "unverified"]},
+        "confidence_reason": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "detector": {
+      "type": "object",
+      "required": ["detector_id", "detector_version", "category", "status", "files_scanned"],
+      "properties": {
+        "detector_id": {"type": "string", "minLength": 1},
+        "detector_version": {"type": "string", "minLength": 1},
+        "category": {"type": "string", "minLength": 1},
+        "status": {"enum": ["supported", "partial", "unsupported", "failed"]},
+        "files_scanned": {"type": "integer", "minimum": 0},
+        "supported_patterns": {"type": "array", "items": {"type": "string"}},
+        "unsupported_patterns": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "issue": {
+      "type": "object",
+      "required": ["code", "message", "detector_id", "severity", "evidence"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1},
+        "detector_id": {"type": "string", "minLength": 1},
+        "severity": {"enum": ["warning", "blocking"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    }
+  }
+}
