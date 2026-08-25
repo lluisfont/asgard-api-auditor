@@ -12,7 +12,7 @@ La pregunta operativa es:
 
 ## Estado
 
-**v0.4.4 — discovery SOAP trazable sin mezclarlo con REST.**
+**v0.4.5 — snapshots WSDL explícitos y reproducibles para completar contratos SOAP.**
 
 La v0.3 detecta tecnologías y superficies. La v0.4.x utiliza ese inventario para localizar endpoints HTTP expuestos y consumidos con evidencia concreta y falla de forma cerrada ante patrones dinámicos o todavía no soportados.
 
@@ -44,7 +44,18 @@ Actualmente incluye detectores para Laravel, Slim, Angular `HttpClient`, Axios, 
 
 Slim solo se reconoce en receptores verificables de aplicación/router. PHP cURL soporta `curl_setopt`, `curl_setopt_array([...])`, `curl_setopt_array(array(...))` y wrappers locales `$this->method(...)` cuando la propagación de argumentos es inequívoca.
 
-Las integraciones SOAP se reportan en `integrations`, no como endpoints REST. La detección separa `soap_operations_complete` de `soap_contracts_complete`: puede demostrar operaciones PHP `SoapClient` aunque el contrato WSDL no esté versionado localmente. Si falta el contrato reproducible, SOAP mantiene el detector en estado `partial` y `discovery_complete=false`.
+Las integraciones SOAP se reportan en `integrations`, no como endpoints REST. La detección separa `soap_operations_complete` de `soap_contracts_complete`: puede demostrar operaciones PHP `SoapClient` aunque el contrato WSDL no esté versionado localmente.
+
+Cuando la expresión usada por `SoapClient` no puede resolverse desde código versionado, se puede aportar explícitamente un snapshot WSDL local y versionado:
+
+```bash
+asgard-api-auditor discover /ruta/al/repositorio \
+  --soap-wsdl servicioovp=contracts/soap/ovp.wsdl
+```
+
+`--soap-wsdl` es repetible. La clave puede ser la expresión o valor del servicio detectado. El path debe permanecer dentro del repositorio y estar versionado por Git. El auditor no descarga WSDLs de red durante el discovery.
+
+Si el snapshot es válido, las operaciones SOAP usadas por el código se contrastan contra el WSDL. Una operación consumida que no exista en el contrato genera `soap_operation_not_in_wsdl` y mantiene `discovery_complete=false`.
 
 Si aparece un framework, cliente o patrón no soportado, `discovery_complete=false` y el problema queda explícitamente registrado en `unresolved`.
 
@@ -63,6 +74,7 @@ discover (v0.4)
         |
         +--> endpoints expuestos
         +--> endpoints consumidos
+        +--> integraciones SOAP
         +--> evidencia
         +--> cobertura por detector
         +--> unresolved / unsupported
