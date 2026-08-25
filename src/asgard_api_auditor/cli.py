@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import __version__
 from .discovery import discover_endpoints, discovery_to_dict
+from .generation import generate_audit
 from .inventory import InventoryError, inventory_repository, inventory_to_dict
 from .models import AuditTarget
 
@@ -47,10 +48,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    audit = subparsers.add_parser("audit", help="Run the full API audit (not implemented yet).")
+    audit = subparsers.add_parser("audit", help="Generate the v0.5 audit artifact set")
     audit.add_argument("repository", type=Path, help="Local Git repository root")
-    audit.add_argument("--ref", default="HEAD", help="Git ref or commit being audited")
+    audit.add_argument("--ref", default="HEAD", help="Git ref; it must resolve to checked-out HEAD")
+    audit.add_argument("--repository-id", help="Stable logical repository ID")
     audit.add_argument("--output", type=Path, default=Path("output"), help="Output directory")
+    audit.add_argument("--allow-dirty", action="store_true", help="Allow diagnostic audit of dirty tree")
+    audit.add_argument("--exclude-path", action="append", help="Repository-relative path to exclude; may be repeated")
+    audit.add_argument(
+        "--soap-wsdl",
+        action="append",
+        metavar="SERVICE=PATH",
+        help=(
+            "Map a SOAP service expression/value to a versioned repository-local WSDL snapshot; "
+            "may be repeated"
+        ),
+    )
     return parser
 
 
@@ -135,14 +148,27 @@ def _discover_command(args: argparse.Namespace) -> int:
 
 
 def _audit_command(args: argparse.Namespace) -> int:
-    target = AuditTarget(repository=args.repository, ref=args.ref, output=args.output)
-    if not target.repository.is_dir():
-        print(f"ERROR: Repository path does not exist or is not a directory: {target.repository}", file=sys.stderr)
+    target = AuditTarget(
+        repository=args.repository,
+        ref=args.ref,
+        output=args.output,
+        repository_id=args.repository_id,
+        exclude_paths=tuple(args.exclude_path or ()),
+    )
+    try:
+        soap_wsdl = _parse_soap_wsdl(args.soap_wsdl)
+        destination, findings = generate_audit(
+            target,
+            allow_dirty=args.allow_dirty,
+            soap_wsdl=soap_wsdl,
+        )
+    except (InventoryError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     print(f"ASGARD API Auditor v{__version__}")
-    print("Full audit output generation is intentionally not implemented in v0.4.")
-    print("Run `asgard-api-auditor discover <repository>` to discover HTTP endpoints.")
-    return 4
+    print(f"Audit artifacts written to {destination}")
+    print(f"Audit status: {findings['status']}")
+    return 0 if findings["status"] == "complete" else 3
 
 
 def main(argv: Sequence[str] | None = None) -> int:
