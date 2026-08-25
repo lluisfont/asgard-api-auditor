@@ -63,10 +63,27 @@ class EndpointDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp), {
                 "composer.json": json.dumps({"require": {"slim/slim": "^4.14"}}),
-                "public/index.php": "<?php\n$app->get('/almacenes/{idalmacen}', $handler);\n",
+                "public/index.php": "<?php\n$app->put('/route', $handler);\n",
             })
             result = discover_endpoints(AuditTarget(repo))
-            self.assertIn(("exposed", "GET", "/almacenes/{idalmacen}"), _endpoint_set(result))
+            self.assertIn(("exposed", "PUT", "/route"), _endpoint_set(result))
+            self.assertTrue(result.discovery_complete)
+
+    def test_sftp_put_is_not_slim_route_or_unresolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "composer.json": json.dumps({"require": {"slim/slim": "^4.14"}}),
+                "public/index.php": "<?php\n$app->get('/health', $handler);\n",
+                "src/Sftp.php": (
+                    "<?php\n"
+                    "if (!$sftp->put($remotePath, $origin, \\phpseclib\\Net\\SFTP::SOURCE_LOCAL_FILE)) {\n"
+                    "    throw new RuntimeException('failed');\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertNotIn(("exposed", "PUT", "{remotePath}"), _endpoint_set(result))
+            self.assertNotIn("slim_dynamic_route_unresolved", {x.code for x in result.unresolved})
             self.assertTrue(result.discovery_complete)
 
     def test_resource_route_is_not_silently_expanded(self) -> None:
@@ -93,20 +110,46 @@ class EndpointDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp), {
                 "src/api.ts": (
-                    "export class Api {\n"
-                    "  private API_URL = 'https://warehouse.example/api/login';\n"
-                    "  save() { return fetch(this.API_URL, { method: 'POST' }); }\n"
+                    "export class ChatbotComponent {\n"
+                    "  API_URL = 'https://n8n.kpogroup.bo/webhook/asgard-chatbot';\n"
+                    "  async send(formData: FormData) {\n"
+                    "    const res = await fetch(this.API_URL, {\n"
+                    "      method: 'POST',\n"
+                    "      body: formData\n"
+                    "    });\n"
+                    "    return res;\n"
+                    "  }\n"
                     "}\n"
                 ),
             })
             result = discover_endpoints(AuditTarget(repo))
-            self.assertIn(("consumed", "POST", "/api/login"), _endpoint_set(result))
+            self.assertIn(("consumed", "POST", "/webhook/asgard-chatbot"), _endpoint_set(result))
+            endpoint = next(item for item in result.endpoints if item.path == "/webhook/asgard-chatbot")
+            self.assertEqual(endpoint.base_url, "https://n8n.kpogroup.bo")
+            self.assertEqual(endpoint.confidence, "confirmed")
+            self.assertEqual({e.note for e in endpoint.evidence}, {"fetch HTTP call", "literal fetch URL property"})
+            self.assertNotIn("http_client_detected_no_calls", {x.code for x in result.unresolved})
             self.assertTrue(result.discovery_complete)
 
     def test_dynamic_fetch_remains_unresolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp), {"src/api.ts": "fetch(buildUrl());\n"})
             result = discover_endpoints(AuditTarget(repo))
+            self.assertFalse(result.discovery_complete)
+            self.assertIn("fetch_dynamic_or_complex_call_unresolved", {x.code for x in result.unresolved})
+
+    def test_fetch_property_concatenation_remains_unresolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/api.ts": (
+                    "export class Api {\n"
+                    "  API_URL = 'https://warehouse.example/api';\n"
+                    "  load(path: string) { return fetch(this.API_URL + path); }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual([], result.endpoints)
             self.assertFalse(result.discovery_complete)
             self.assertIn("fetch_dynamic_or_complex_call_unresolved", {x.code for x in result.unresolved})
 
@@ -155,6 +198,49 @@ class EndpointDiscoveryTests(unittest.TestCase):
             self.assertIn(("consumed", "POST", "/api/sync"), found)
             auth = next(item for item in result.endpoints if item.path == "/seguridad/autenticar")
             self.assertEqual(auth.base_url, "url_intercompany_delosi")
+
+    def test_discovers_php_curl_setopt_array_classic_array_syntax(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Delosi.php": (
+                    "<?php\n"
+                    "$curl = curl_init();\n"
+                    "curl_setopt_array($curl, array(\n"
+                    "  CURLOPT_URL => url_intercompany_delosi.'/almacen/movimientointerno',\n"
+                    "  CURLOPT_CUSTOMREQUEST => 'POST',\n"
+                    "  CURLOPT_POSTFIELDS => json_encode($data),\n"
+                    "));\n"
+                    "$lookup = curl_init();\n"
+                    "curl_setopt_array($lookup, array(\n"
+                    "  CURLOPT_URL => URL_ASGARD_API.'/inventario/reportes/buscar-chasis',\n"
+                    "  CURLOPT_CUSTOMREQUEST => 'POST',\n"
+                    "));\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+            self.assertIn(("consumed", "POST", "/almacen/movimientointerno"), found)
+            self.assertIn(("consumed", "POST", "/inventario/reportes/buscar-chasis"), found)
+            movimiento = next(item for item in result.endpoints if item.path == "/almacen/movimientointerno")
+            buscar = next(item for item in result.endpoints if item.path == "/inventario/reportes/buscar-chasis")
+            self.assertEqual(movimiento.base_url, "url_intercompany_delosi")
+            self.assertEqual(buscar.base_url, "URL_ASGARD_API")
+            self.assertTrue(result.discovery_complete)
+
+    def test_ambiguous_curl_init_variable_remains_unresolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/BlobStorageService.php": (
+                    "<?php\n"
+                    "function callHttpCurl($method, $url) {\n"
+                    "  $ch = curl_init($url);\n"
+                    "  curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertFalse(result.discovery_complete)
+            self.assertIn("php_curl_url_unresolved", {x.code for x in result.unresolved})
 
     def test_discover_excludes_audit_and_work_sample(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,4 +1,4 @@
-# Endpoint discovery v0.4.1
+# Endpoint discovery v0.4.2
 
 La fase `discover` convierte el inventario técnico de v0.3 en hallazgos HTTP concretos sin afirmar más de lo que puede demostrar.
 
@@ -31,9 +31,11 @@ El resultado cumple `schemas/endpoint-discovery.schema.json`.
 Expuestos:
 
 - Laravel `Route::get/post/put/patch/delete/options/head` con path literal y `Route::match` con métodos/path literales.
-- Slim `$app->get/post/put/patch/delete/options(...)` con path literal.
+- Slim `$app->get/post/put/patch/delete/options(...)` con path literal, limitado a receptores verificables de aplicación/router Slim.
 
 Consumidos: Angular `HttpClient`, Axios, Fetch, Guzzle, Laravel HTTP facade, PHP cURL, Dio y Dart `http` con `Uri.parse` literal.
+
+PHP cURL cubre `curl_init`, `curl_setopt`, `curl_setopt_array([...])` y `curl_setopt_array(array(...))`. Cuando una base es una constante o expresión no resuelta, se conserva como expresión trazable en vez de inventar su valor.
 
 Integraciones: SOAP se emite en `integrations` con WSDL/operación cuando puede demostrarse. SOAP no se convierte en REST/OpenAPI y mantiene `discovery_complete=false` mientras la extracción WSDL sea parcial.
 

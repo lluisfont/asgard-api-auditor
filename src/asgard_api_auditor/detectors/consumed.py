@@ -147,7 +147,7 @@ def _fetch(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], 
     )
     this_property = re.compile(
         r"\bfetch\s*\(\s*this\.(?P<property>[A-Za-z_]\w*)"
-        r"(?P<options>\s*,\s*\{.*?\})?\s*\)",
+        r"\s*(?:(?P<options>,\s*\{.*?\})\s*)?\)",
         re.IGNORECASE | re.DOTALL,
     )
     any_call = re.compile(r"\bfetch\s*\(")
@@ -166,7 +166,7 @@ def _fetch(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], 
         ):
             property_literals[assignment.group("name")] = (assignment.group("value"), assignment.start())
         for field in re.finditer(
-            r"\b(?:private|public|protected|readonly|static|\s)+"
+            r"\b(?:(?:private|public|protected|readonly|static)\s+)*"
             r"(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<quote>['\"`])(?P<value>.*?)(?P=quote)",
             text,
             re.DOTALL,
@@ -633,12 +633,13 @@ def _php_curl(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding
                 state.setdefault("method", "POST")
 
         for match in re.finditer(
-            r"curl_setopt_array\s*\(\s*(?P<handle>\$[A-Za-z_]\w*)\s*,\s*\[(?P<body>.*?)\]\s*\)",
+            r"curl_setopt_array\s*\(\s*(?P<handle>\$[A-Za-z_]\w*)\s*,\s*"
+            r"(?:\[(?P<bracket_body>.*?)\]|array\s*\((?P<array_body>.*?)\))\s*\)\s*;",
             text,
             re.DOTALL,
         ):
             handle = match.group("handle")
-            body = match.group("body")
+            body = match.group("bracket_body") or match.group("array_body") or ""
             state = handles.setdefault(handle, {"offset": match.start()})
             for item in re.finditer(r"(?P<option>CURLOPT_[A-Z_]+)\s*=>\s*(?P<value>[^,\n]+)", body):
                 option = item.group("option")

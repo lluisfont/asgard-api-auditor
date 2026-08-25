@@ -12,7 +12,7 @@ La pregunta operativa es:
 
 ## Estado
 
-**v0.4.1 — discovery real de endpoints HTTP con soporte Warehouse.**
+**v0.4.2 — discovery real de endpoints HTTP con soporte Warehouse.**
 
 La v0.3 detecta tecnologías y superficies. La v0.4.x utiliza ese inventario para localizar endpoints HTTP expuestos y consumidos con evidencia concreta y falla de forma cerrada ante patrones dinámicos o todavía no soportados.
 
@@ -41,6 +41,8 @@ asgard-api-auditor discover /ruta/al/repositorio --output endpoint-discovery.jso
 ```
 
 Actualmente incluye detectores para Laravel, Slim, Angular `HttpClient`, Axios, Fetch, Guzzle, Laravel HTTP facade, PHP cURL, Dio y Dart `http`.
+
+Slim solo se reconoce en receptores verificables de aplicación/router. PHP cURL soporta `curl_setopt`, `curl_setopt_array([...])` y `curl_setopt_array(array(...))`.
 
 Las integraciones SOAP se reportan en `integrations`, no como endpoints REST. Hasta que exista extracción completa de WSDL, SOAP mantiene el detector en estado `partial`.
 
