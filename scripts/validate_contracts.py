@@ -13,8 +13,10 @@ sys.path.insert(0, str(SRC))
 
 from asgard_api_auditor.constants import (  # noqa: E402
     FINDINGS_SCHEMA_VERSION,
+    INVENTORY_SCOPE_VERSION,
     OPENAPI_VERSION,
     PRIMARY_ARTIFACTS,
+    TECHNICAL_INVENTORY_SCHEMA_VERSION,
 )
 
 
@@ -73,6 +75,55 @@ def validate_findings_schema() -> None:
     )
 
 
+def validate_inventory_schema() -> None:
+    path = ROOT / "schemas" / "technical-inventory.schema.json"
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    props = schema["properties"]
+    required = set(schema["required"])
+    expected = {
+        "schema_version",
+        "scope_version",
+        "auditor_version",
+        "repository",
+        "repository_id",
+        "repository_identity_source",
+        "source_ref",
+        "source_commit",
+        "working_tree_dirty",
+        "inventory_complete",
+        "files_scanned",
+        "text_files_inspected",
+        "excluded_roots",
+        "skipped_oversize_files",
+        "skipped_symlinks",
+        "manifest_errors",
+        "manifests",
+        "submodules",
+        "languages",
+        "frameworks",
+        "http_clients",
+        "integration_surfaces",
+        "existing_specs",
+        "required_detector_categories",
+        "detector_hints",
+        "notes",
+    }
+    require(expected.issubset(required), "technical inventory schema misses required fields")
+    require(
+        props["schema_version"].get("const") == TECHNICAL_INVENTORY_SCHEMA_VERSION,
+        "technical inventory schema version mismatch",
+    )
+    require(
+        props["scope_version"].get("const") == INVENTORY_SCOPE_VERSION,
+        "technical inventory scope version mismatch",
+    )
+    detection = schema["$defs"]["technologyDetection"]
+    require(
+        {"kind", "name", "confidence", "evidence"}.issubset(set(detection["required"])),
+        "technology detection must require evidence and confidence",
+    )
+
+
 def validate_templates() -> None:
     shared_tokens = (
         "{{ audit_id }}",
@@ -103,7 +154,12 @@ def validate_primary_contract() -> None:
 
 
 def main() -> int:
-    checks = [validate_findings_schema, validate_templates, validate_primary_contract]
+    checks = [
+        validate_findings_schema,
+        validate_inventory_schema,
+        validate_templates,
+        validate_primary_contract,
+    ]
     try:
         for check in checks:
             check()
