@@ -18,6 +18,7 @@ Optional arguments:
 - `--repository-id <id>`: stable logical repository identity when `origin` is absent or unsuitable.
 - `--output <file>`: write JSON atomically instead of stdout.
 - `--allow-dirty`: permit diagnostic inventory of a dirty working tree. The result is always incomplete and exits with code `3`.
+- `--exclude-path <path>`: exclude a repository-relative file or directory. The flag may be repeated.
 
 ## Git provenance rules
 
@@ -46,7 +47,7 @@ The scanner inventories:
 - manifest files relevant to supported ecosystems;
 - detector categories and concrete detector hints required by subsequent stages.
 
-Dependency/build/generated directories are pruned before inspection, including `.git`, `node_modules`, `vendor`, virtual environments, build outputs and auditor output directories.
+Dependency/build/generated directories are pruned before inspection, including `.git`, `node_modules`, `vendor`, virtual environments, build outputs and auditor output directories. Explicit `--exclude-path` entries are also pruned and appear in `excluded_roots`; excluded files do not make the inventory incomplete.
 
 Documentation files are deliberately not searched for technology signatures. A README that mentions Axios or GraphQL is not evidence that the repository uses them.
 

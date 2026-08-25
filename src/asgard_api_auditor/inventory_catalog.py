@@ -32,6 +32,10 @@ CODE_EXTENSIONS = {
     ".php", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue",
     ".dart", ".py", ".java", ".kt", ".kts", ".cs", ".go", ".rb", ".swift",
 }
+PHP_EXTENSIONS = frozenset({".php"})
+JS_TS_EXTENSIONS = frozenset({".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue"})
+TS_EXTENSIONS = frozenset({".ts", ".tsx"})
+CSHARP_EXTENSIONS = frozenset({".cs"})
 CONFIG_EXTENSIONS = {".json", ".yaml", ".yml", ".toml", ".xml", ".gradle", ".properties"}
 
 LANGUAGE_BY_EXTENSION = {
@@ -51,18 +55,21 @@ MANIFEST_NAMES = {
 SERVER_FRAMEWORKS = {
     "laravel", "lumen", "symfony", "express", "nestjs", "fastify", "nextjs",
     "nuxt", "fastapi", "flask", "django", "spring-boot", "aspnet-core", "rails",
+    "slim",
 }
 
 FRAMEWORK_DEPENDENCIES = {
     "composer": {
         "laravel/framework": "laravel",
         "laravel/lumen-framework": "lumen",
+        "slim/slim": "slim",
         "symfony/framework-bundle": "symfony",
         "symfony/http-kernel": "symfony",
     },
     "npm": {
         "vue": "vue", "nuxt": "nuxt", "react": "react", "next": "nextjs",
         "express": "express", "@nestjs/core": "nestjs", "fastify": "fastify",
+        "@angular/core": "angular",
     },
     "python": {"fastapi": "fastapi", "flask": "flask", "django": "django"},
     "dart": {"flutter": "flutter"},
@@ -76,7 +83,13 @@ FRAMEWORK_DEPENDENCIES = {
 
 HTTP_CLIENT_DEPENDENCIES = {
     "composer": {"guzzlehttp/guzzle": "guzzle"},
-    "npm": {"axios": "axios", "ky": "ky", "got": "got", "node-fetch": "fetch"},
+    "npm": {
+        "axios": "axios",
+        "ky": "ky",
+        "got": "got",
+        "node-fetch": "fetch",
+        "@angular/common": "angular-httpclient",
+    },
     "python": {"requests": "requests", "httpx": "httpx", "aiohttp": "aiohttp"},
     "dart": {"dio": "dio", "http": "dart-http"},
     "java": {
@@ -101,56 +114,62 @@ INTEGRATION_DEPENDENCIES = {
     "dotnet": {"grpc.net.client": "grpc"},
 }
 
-CODE_SIGNATURES: tuple[tuple[TechnologyKind, str, re.Pattern[str]], ...] = (
+CODE_SIGNATURES: tuple[
+    tuple[TechnologyKind, str, re.Pattern[str], frozenset[str] | None],
+    ...
+] = (
     ("framework", "laravel", re.compile(
         r"(?:Illuminate\\\\Routing|\bRoute::(?:get|post|put|patch|delete|options|any|match)\s*\()"
-    )),
-    ("framework", "symfony", re.compile(r"(?:Symfony\\\\Component\\\\Routing|#\[Route\s*\()")),
+    ), PHP_EXTENSIONS),
+    ("framework", "symfony", re.compile(r"(?:Symfony\\\\Component\\\\Routing|#\[Route\s*\()"), PHP_EXTENSIONS),
     (
         "framework",
         "express",
         re.compile(r"(?:from\s+['\"]express['\"]|require\(['\"]express['\"]\))"),
+        JS_TS_EXTENSIONS,
     ),
-    ("framework", "nestjs", re.compile(r"(?:@nestjs/common|@Controller\s*\()")),
-    ("framework", "fastapi", re.compile(r"(?:from\s+fastapi\s+import|FastAPI\s*\()")),
-    ("framework", "flask", re.compile(r"(?:from\s+flask\s+import|Flask\s*\()")),
-    ("framework", "django", re.compile(r"(?:from\s+django\.|\burlpatterns\s*=)")),
+    ("framework", "angular", re.compile(r"(?:from\s+['\"]@angular/core['\"]|@Component\s*\()"), TS_EXTENSIONS),
+    ("framework", "nestjs", re.compile(r"(?:@nestjs/common|@Controller\s*\()"), JS_TS_EXTENSIONS),
+    ("framework", "fastapi", re.compile(r"(?:from\s+fastapi\s+import|FastAPI\s*\()"), frozenset({".py"})),
+    ("framework", "flask", re.compile(r"(?:from\s+flask\s+import|Flask\s*\()"), frozenset({".py"})),
+    ("framework", "django", re.compile(r"(?:from\s+django\.|\burlpatterns\s*=)"), frozenset({".py"})),
     ("framework", "spring-boot", re.compile(
         r"(?:@RestController\b|org\.springframework\.web\.bind\.annotation)"
-    )),
-    ("framework", "aspnet-core", re.compile(r"(?:\[ApiController\]|Microsoft\.AspNetCore)")),
-    ("framework", "flutter", re.compile(r"import\s+['\"]package:flutter/")),
-    ("http_client", "php-curl", re.compile(r"\bcurl_init\s*\(")),
-    ("http_client", "guzzle", re.compile(r"(?:GuzzleHttp\\\\Client|GuzzleHttp\\\\Psr7)")),
+    ), frozenset({".java", ".kt", ".kts"})),
+    ("framework", "aspnet-core", re.compile(r"(?:\[ApiController\]|Microsoft\.AspNetCore)"), CSHARP_EXTENSIONS),
+    ("framework", "flutter", re.compile(r"import\s+['\"]package:flutter/"), frozenset({".dart"})),
+    ("http_client", "php-curl", re.compile(r"\bcurl_init\s*\("), PHP_EXTENSIONS),
+    ("http_client", "guzzle", re.compile(r"(?:GuzzleHttp\\\\Client|GuzzleHttp\\\\Psr7)"), PHP_EXTENSIONS),
     ("http_client", "laravel-http", re.compile(
         r"(?:Illuminate\\\\Support\\\\Facades\\\\Http|"
         r"\bHttp::(?:get|post|put|patch|delete|send)\s*\()"
-    )),
-    ("http_client", "axios", re.compile(r"(?:from\s+['\"]axios['\"]|require\(['\"]axios['\"]\))")),
-    ("http_client", "fetch", re.compile(r"\bfetch\s*\(")),
-    ("http_client", "dio", re.compile(r"import\s+['\"]package:dio/")),
-    ("http_client", "dart-http", re.compile(r"import\s+['\"]package:http/")),
+    ), PHP_EXTENSIONS),
+    ("http_client", "axios", re.compile(r"(?:from\s+['\"]axios['\"]|require\(['\"]axios['\"]\))"), JS_TS_EXTENSIONS),
+    ("http_client", "angular-httpclient", re.compile(r"(?:@angular/common/http|\bHttpClient\b)"), TS_EXTENSIONS),
+    ("http_client", "fetch", re.compile(r"\bfetch\s*\("), JS_TS_EXTENSIONS),
+    ("http_client", "dio", re.compile(r"import\s+['\"]package:dio/"), frozenset({".dart"})),
+    ("http_client", "dart-http", re.compile(r"import\s+['\"]package:http/"), frozenset({".dart"})),
     ("http_client", "requests", re.compile(
         r"(?:^|\n)\s*(?:import\s+requests\b|from\s+requests\s+import)"
-    )),
-    ("http_client", "httpx", re.compile(r"(?:^|\n)\s*(?:import\s+httpx\b|from\s+httpx\s+import)")),
+    ), frozenset({".py"})),
+    ("http_client", "httpx", re.compile(r"(?:^|\n)\s*(?:import\s+httpx\b|from\s+httpx\s+import)"), frozenset({".py"})),
     ("http_client", "aiohttp", re.compile(
         r"(?:^|\n)\s*(?:import\s+aiohttp\b|from\s+aiohttp\s+import)"
-    )),
-    ("http_client", "okhttp", re.compile(r"\bOkHttpClient\b")),
-    ("http_client", "spring-web-client", re.compile(r"\bRestTemplate\b")),
-    ("http_client", "spring-webclient", re.compile(r"\bWebClient\b")),
-    ("http_client", "dotnet-httpclient", re.compile(r"\bHttpClient\b")),
+    ), frozenset({".py"})),
+    ("http_client", "okhttp", re.compile(r"\bOkHttpClient\b"), frozenset({".java", ".kt", ".kts"})),
+    ("http_client", "spring-web-client", re.compile(r"\bRestTemplate\b"), frozenset({".java", ".kt", ".kts"})),
+    ("http_client", "spring-webclient", re.compile(r"\bWebClient\b"), frozenset({".java", ".kt", ".kts"})),
+    ("http_client", "dotnet-httpclient", re.compile(r"\bHttpClient\b"), CSHARP_EXTENSIONS),
     ("integration_surface", "graphql", re.compile(
         r"(?:@apollo/|\bGraphQLSchema\b|package:graphql/)"
-    )),
+    ), None),
     ("integration_surface", "websocket", re.compile(
         r"(?:\bnew\s+WebSocket\s*\(|package:web_socket_channel/)"
-    )),
-    ("integration_surface", "grpc", re.compile(r"(?:\bgrpc\.|package:grpc/|io\.grpc\.)")),
-    ("integration_surface", "soap", re.compile(r"(?:\bSoapClient\b|\bzeep\b|javax\.xml\.ws)")),
-    ("integration_surface", "sse", re.compile(r"(?:\bEventSource\s*\(|text/event-stream)")),
-    ("integration_surface", "webhook", re.compile(r"\b[A-Z0-9_]*WEBHOOK_URL\b")),
+    ), None),
+    ("integration_surface", "grpc", re.compile(r"(?:\bgrpc\.|package:grpc/|io\.grpc\.)"), None),
+    ("integration_surface", "soap", re.compile(r"(?:\bSoapClient\b|\bzeep\b|javax\.xml\.ws)"), None),
+    ("integration_surface", "sse", re.compile(r"(?:\bEventSource\s*\(|text/event-stream)"), None),
+    ("integration_surface", "webhook", re.compile(r"\b[A-Z0-9_]*WEBHOOK_URL\b"), None),
 )
 
 EXISTING_SPEC_NAMES = re.compile(

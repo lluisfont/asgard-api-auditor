@@ -37,6 +37,7 @@ from .models import (
     TechnologyDetection,
     TechnologyKind,
 )
+from .path_filters import is_excluded_path, normalize_exclude_paths
 
 
 def _relative(repository: Path, path: Path) -> str:
@@ -67,7 +68,11 @@ def _merge_detection(
         evidences.append(evidence)
 
 
-def _iter_repository_files(repository: Path) -> tuple[list[Path], list[str], list[str]]:
+def _iter_repository_files(
+    repository: Path,
+    exclude_paths: tuple[str, ...] = (),
+) -> tuple[list[Path], list[str], list[str]]:
+    exclude_paths = normalize_exclude_paths(repository, exclude_paths)
     files: list[Path] = []
     excluded_roots: list[str] = []
     symlinks: list[str] = []
@@ -79,7 +84,7 @@ def _iter_repository_files(repository: Path) -> tuple[list[Path], list[str], lis
             rel = _relative(repository, path)
             if path.is_symlink():
                 symlinks.append(rel)
-            elif dirname in EXCLUDED_DIRS:
+            elif dirname in EXCLUDED_DIRS or is_excluded_path(repository, path, exclude_paths):
                 excluded_roots.append(rel)
             else:
                 kept_dirs.append(dirname)
@@ -89,6 +94,8 @@ def _iter_repository_files(repository: Path) -> tuple[list[Path], list[str], lis
             rel = _relative(repository, path)
             if path.is_symlink():
                 symlinks.append(rel)
+            elif is_excluded_path(repository, path, exclude_paths):
+                excluded_roots.append(rel)
             elif path.is_file():
                 files.append(path)
     return files, sorted(set(excluded_roots)), sorted(set(symlinks))
@@ -143,7 +150,10 @@ def _code_detections(
     text: str,
 ) -> None:
     rel = _relative(repository, path)
-    for kind, name, pattern in CODE_SIGNATURES:
+    suffix = path.suffix.lower()
+    for kind, name, pattern, extensions in CODE_SIGNATURES:
+        if extensions is not None and suffix not in extensions:
+            continue
         match = pattern.search(text)
         if not match:
             continue
@@ -207,7 +217,8 @@ def inventory_repository(target: AuditTarget, *, allow_dirty: bool = False) -> T
             "inventory, which will be marked incomplete."
         )
 
-    files, excluded_roots, symlinks = _iter_repository_files(repository)
+    exclude_paths = normalize_exclude_paths(repository, target.exclude_paths)
+    files, excluded_roots, symlinks = _iter_repository_files(repository, exclude_paths)
     submodules = discover_submodules(repository)
     languages = _language_detections(repository, files)
     store: dict[tuple[TechnologyKind, str], dict[str, object]] = {}

@@ -7,13 +7,15 @@ from dataclasses import asdict
 from . import __version__
 from .constants import ENDPOINT_DISCOVERY_SCHEMA_VERSION
 from .detectors.consumed import detect_consumed_endpoints
+from .detectors.integrations import detect_soap_integrations
 from .detectors.laravel import detect_laravel_routes
+from .detectors.slim import detect_slim_routes
 from .discovery_types import DiscoveryIssue, EndpointDiscovery
 from .discovery_utils import iter_source_files
 from .inventory import inventory_repository
 from .models import AuditTarget, DetectorCoverage, EndpointFinding
 
-_SUPPORTED_SERVER_FRAMEWORKS = {"laravel"}
+_SUPPORTED_SERVER_FRAMEWORKS = {"laravel", "slim"}
 
 
 def _dedupe_endpoints(endpoints: list[EndpointFinding]) -> list[EndpointFinding]:
@@ -35,9 +37,10 @@ def _dedupe_endpoints(endpoints: list[EndpointFinding]) -> list[EndpointFinding]
 def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> EndpointDiscovery:
     inventory = inventory_repository(target, allow_dirty=allow_dirty)
     repository = target.repository.resolve()
-    files = iter_source_files(repository)
+    files = iter_source_files(repository, target.exclude_paths)
 
     endpoints: list[EndpointFinding] = []
+    integrations = []
     issues: list[DiscoveryIssue] = []
     coverage: list[DetectorCoverage] = []
 
@@ -76,8 +79,37 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
             )
         coverage.append(detector_coverage)
 
+    if "slim" in frameworks:
+        found, detector_issues, detector_coverage = detect_slim_routes(repository, files)
+        endpoints.extend(found)
+        issues.extend(detector_issues)
+        if not found:
+            issues.append(
+                DiscoveryIssue(
+                    code="slim_detected_no_routes",
+                    message=(
+                        "Slim was detected but no supported route declarations were proven. "
+                        "Routes may be registered dynamically or outside supported patterns."
+                    ),
+                    detector_id="slim-routes",
+                )
+            )
+            detector_coverage = DetectorCoverage(
+                detector_id=detector_coverage.detector_id,
+                detector_version=detector_coverage.detector_version,
+                category=detector_coverage.category,
+                status="partial",
+                files_scanned=detector_coverage.files_scanned,
+                supported_patterns=detector_coverage.supported_patterns,
+                unsupported_patterns=tuple(
+                    sorted(set(detector_coverage.unsupported_patterns) | {"slim_detected_no_routes"})
+                ),
+                notes=detector_coverage.notes,
+            )
+        coverage.append(detector_coverage)
+
     for framework in sorted(frameworks - _SUPPORTED_SERVER_FRAMEWORKS):
-        if framework in {"vue", "react", "flutter"}:
+        if framework in {"angular", "vue", "react", "flutter"}:
             continue
         issue = DiscoveryIssue(
             code="unsupported_server_framework",
@@ -114,8 +146,16 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
             )
         )
 
-    if inventory.integration_surfaces:
-        names = ", ".join(sorted({item.name for item in inventory.integration_surfaces}))
+    integration_names = {item.name for item in inventory.integration_surfaces}
+    if "soap" in integration_names:
+        found, soap_issues, soap_coverage = detect_soap_integrations(repository, files)
+        integrations.extend(found)
+        issues.extend(soap_issues)
+        coverage.append(soap_coverage)
+
+    unresolved_integrations = integration_names - {"soap"}
+    if unresolved_integrations:
+        names = ", ".join(sorted(unresolved_integrations))
         issues.append(
             DiscoveryIssue(
                 code="non_http_integration_requires_dedicated_detector",
@@ -134,7 +174,7 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
                 status="partial",
                 supported_patterns=(),
                 unsupported_patterns=tuple(
-                    sorted({item.name for item in inventory.integration_surfaces})
+                    sorted(unresolved_integrations)
                 ),
             )
         )
@@ -166,6 +206,7 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
         inventory_complete=inventory.inventory_complete,
         discovery_complete=discovery_complete,
         endpoints=_dedupe_endpoints(endpoints),
+        integrations=integrations,
         detectors=coverage,
         unresolved=issues,
         notes=notes,

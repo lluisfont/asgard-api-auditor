@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.1 - 2026-08-25
+
+### Added
+
+- Slim 4 route discovery for literal `$app->get/post/put/patch/delete/options(...)` routes.
+- Angular `HttpClient` consumer discovery with simple `GLOBAL.url`/`this.url` assignment and concatenation resolution.
+- PHP cURL consumer discovery for `curl_init`, `curl_setopt` and `curl_setopt_array`.
+- SOAP integration findings that stay separate from REST endpoints and keep discovery partial until full WSDL extraction exists.
+- Repeatable `--exclude-path` for `inventory` and `discover`.
+
+### Fixed
+
+- Angular `HttpClient` is no longer misclassified as .NET `HttpClient`.
+- PHP `PDO::fetch` is no longer misclassified as JavaScript HTTP `fetch`.
+- Source-code technology signatures are now scoped by file extension/language.
+
 ## 0.4.0 - 2026-08-25
 
 ### Added

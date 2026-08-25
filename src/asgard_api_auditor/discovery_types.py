@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .models import DetectorCoverage, EndpointFinding, Evidence
+from .models import Confidence, DetectorCoverage, EndpointFinding, Evidence
 
 IssueSeverity = Literal["warning", "blocking"]
 
@@ -20,6 +20,18 @@ class DiscoveryIssue:
 
 
 @dataclass
+class IntegrationFinding:
+    type: Literal["soap", "graphql", "websocket", "grpc", "sse", "webhook", "other"]
+    direction: Literal["exposed", "consumed", "bidirectional", "unknown"]
+    confidence: Confidence
+    confidence_reason: str
+    evidence: list[Evidence]
+    wsdl: str | None = None
+    operation: str | None = None
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
 class EndpointDiscovery:
     schema_version: str
     auditor_version: str
@@ -30,6 +42,7 @@ class EndpointDiscovery:
     inventory_complete: bool
     discovery_complete: bool
     endpoints: list[EndpointFinding] = field(default_factory=list)
+    integrations: list[IntegrationFinding] = field(default_factory=list)
     detectors: list[DetectorCoverage] = field(default_factory=list)
     unresolved: list[DiscoveryIssue] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
