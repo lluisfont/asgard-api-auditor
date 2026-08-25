@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.4 - 2026-08-26
+
+### Added
+
+- SOAP operation discovery now traces PHP `SoapClient` usage separately from REST/HTTP endpoints.
+- SOAP clients passed as deterministic positional arguments into same-repository class methods can be propagated to operation calls with evidence for creation, argument passing, parameter receiving and operation usage.
+- Endpoint discovery now reports `soap_operations_complete`, `soap_contracts_complete`, `soap_services` and `soap_operations`.
+- Local WSDL snapshots are parsed for service, port, binding and operation message metadata when available.
+
+### Changed
+
+- SOAP contract extraction remains fail-closed: external or unresolved WSDL expressions keep `discovery_complete=false` while preserving detected operations.
+- SOAP findings are not converted into REST endpoints or OpenAPI paths.
+
 ## 0.4.3 - 2026-08-25
 
 ### Added

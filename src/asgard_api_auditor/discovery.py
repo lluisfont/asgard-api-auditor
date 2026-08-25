@@ -43,6 +43,8 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
     integrations = []
     issues: list[DiscoveryIssue] = []
     coverage: list[DetectorCoverage] = []
+    soap_operations_complete: bool | None = None
+    soap_contracts_complete: bool | None = None
 
     frameworks = {item.name for item in inventory.frameworks}
     clients = {item.name for item in inventory.http_clients}
@@ -134,21 +136,11 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
     issues.extend(consumed_issues)
     coverage.extend(consumed_coverage)
 
-    if not coverage:
-        issues.append(
-            DiscoveryIssue(
-                code="no_supported_api_detector_selected",
-                message=(
-                    "Inventory did not select any v0.4 API detector. Absence of findings is not "
-                    "proof that the repository has no API integrations."
-                ),
-                detector_id="discovery-orchestrator",
-            )
-        )
-
     integration_names = {item.name for item in inventory.integration_surfaces}
     if "soap" in integration_names:
-        found, soap_issues, soap_coverage = detect_soap_integrations(repository, files)
+        found, soap_issues, soap_coverage, soap_operations_complete, soap_contracts_complete = (
+            detect_soap_integrations(repository, files)
+        )
         integrations.extend(found)
         issues.extend(soap_issues)
         coverage.append(soap_coverage)
@@ -179,6 +171,18 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
             )
         )
 
+    if not coverage:
+        issues.append(
+            DiscoveryIssue(
+                code="no_supported_api_detector_selected",
+                message=(
+                    "Inventory did not select any v0.4 API detector. Absence of findings is not "
+                    "proof that the repository has no API integrations."
+                ),
+                detector_id="discovery-orchestrator",
+            )
+        )
+
     discovery_complete = (
         inventory.inventory_complete
         and bool(coverage)
@@ -205,6 +209,10 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
         source_commit=inventory.source_commit,
         inventory_complete=inventory.inventory_complete,
         discovery_complete=discovery_complete,
+        soap_operations_complete=soap_operations_complete,
+        soap_contracts_complete=soap_contracts_complete,
+        soap_services=len({item.service_expression or item.wsdl for item in integrations if item.type == "soap"}),
+        soap_operations=len({(item.service_expression or item.wsdl, item.operation) for item in integrations if item.type == "soap"}),
         endpoints=_dedupe_endpoints(endpoints),
         integrations=integrations,
         detectors=coverage,

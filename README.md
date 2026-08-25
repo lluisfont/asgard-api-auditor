@@ -12,7 +12,7 @@ La pregunta operativa es:
 
 ## Estado
 
-**v0.4.3 — discovery real de endpoints HTTP con soporte Warehouse.**
+**v0.4.4 — discovery SOAP trazable sin mezclarlo con REST.**
 
 La v0.3 detecta tecnologías y superficies. La v0.4.x utiliza ese inventario para localizar endpoints HTTP expuestos y consumidos con evidencia concreta y falla de forma cerrada ante patrones dinámicos o todavía no soportados.
 
@@ -44,7 +44,7 @@ Actualmente incluye detectores para Laravel, Slim, Angular `HttpClient`, Axios, 
 
 Slim solo se reconoce en receptores verificables de aplicación/router. PHP cURL soporta `curl_setopt`, `curl_setopt_array([...])`, `curl_setopt_array(array(...))` y wrappers locales `$this->method(...)` cuando la propagación de argumentos es inequívoca.
 
-Las integraciones SOAP se reportan en `integrations`, no como endpoints REST. Hasta que exista extracción completa de WSDL, SOAP mantiene el detector en estado `partial`.
+Las integraciones SOAP se reportan en `integrations`, no como endpoints REST. La detección separa `soap_operations_complete` de `soap_contracts_complete`: puede demostrar operaciones PHP `SoapClient` aunque el contrato WSDL no esté versionado localmente. Si falta el contrato reproducible, SOAP mantiene el detector en estado `partial` y `discovery_complete=false`.
 
 Si aparece un framework, cliente o patrón no soportado, `discovery_complete=false` y el problema queda explícitamente registrado en `unresolved`.
 

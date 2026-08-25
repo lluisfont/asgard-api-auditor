@@ -419,10 +419,252 @@ class EndpointDiscoveryTests(unittest.TestCase):
             self.assertFalse(result.discovery_complete)
             self.assertEqual(result.endpoints, [])
             self.assertEqual(result.integrations[0].type, "soap")
+            self.assertEqual(result.integrations[0].direction, "consumed")
+            self.assertEqual(result.integrations[0].service_expression, "$wsdl")
+            self.assertEqual(result.integrations[0].contract_status, "expression_unresolved")
             self.assertEqual(result.integrations[0].operation, "GetStock")
+            self.assertTrue(result.soap_operations_complete)
+            self.assertFalse(result.soap_contracts_complete)
+            self.assertEqual(result.soap_services, 1)
+            self.assertEqual(result.soap_operations, 1)
             self.assertIn("soap_contract_extraction_partial", {x.code for x in result.unresolved})
             soap_detector = next(item for item in result.detectors if item.detector_id == "soap-integration")
             self.assertEqual(soap_detector.status, "partial")
+
+    def test_direct_soapclient_literal_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Soap.php": (
+                    "<?php\n"
+                    "$client = new SoapClient('https://example.com/service.wsdl');\n"
+                    "$client->GetStock(array('sku' => 'A'));\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual(result.endpoints, [])
+            self.assertEqual(result.soap_services, 1)
+            self.assertEqual(result.soap_operations, 1)
+            soap = result.integrations[0]
+            self.assertEqual(soap.type, "soap")
+            self.assertEqual(soap.operation, "GetStock")
+            self.assertEqual(soap.service_expression, "'https://example.com/service.wsdl'")
+            self.assertEqual(soap.service_value, "https://example.com/service.wsdl")
+            self.assertEqual(soap.contract_status, "external_not_snapshotted")
+            self.assertTrue(result.soap_operations_complete)
+            self.assertFalse(result.soap_contracts_complete)
+            self.assertFalse(result.discovery_complete)
+
+    def test_soapclient_passed_to_local_method_preserves_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Caller.php": (
+                    "<?php\n"
+                    "class Worker {\n"
+                    "  public function send($client) { $client->SubmitInvoice([]); }\n"
+                    "}\n"
+                    "$client = new SoapClient('https://example.com/service.wsdl');\n"
+                    "$worker = new Worker();\n"
+                    "$worker->send($client);\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual(result.soap_operations, 1)
+            soap = result.integrations[0]
+            self.assertEqual(soap.operation, "SubmitInvoice")
+            self.assertEqual(
+                {e.note for e in soap.evidence},
+                {
+                    "SOAP client creation",
+                    "SOAP service expression",
+                    "SOAP client passed as argument",
+                    "SOAP client parameter receiver",
+                    "SOAP operation",
+                },
+            )
+            self.assertTrue(result.soap_operations_complete)
+
+    def test_non_soap_object_call_is_not_reported_as_soap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Repository.php": (
+                    "<?php\n"
+                    "$repository = new Repository();\n"
+                    "$repository->save($payload);\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual(result.integrations, [])
+            self.assertEqual(result.soap_services, 0)
+            self.assertEqual(result.soap_operations, 0)
+
+    def test_ambiguous_soapclient_flow_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Caller.php": (
+                    "<?php\n"
+                    "$client = new SoapClient('https://example.com/service.wsdl');\n"
+                    "$target = resolveTarget();\n"
+                    "$target->send($client);\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual(result.integrations, [])
+            self.assertFalse(result.soap_operations_complete)
+            self.assertIn("soap_operation_unresolved", {x.code for x in result.unresolved})
+            self.assertFalse(result.discovery_complete)
+
+    def test_multiple_soap_operations_are_deduplicated_per_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Soap.php": (
+                    "<?php\n"
+                    "$client = new SoapClient('https://example.com/service.wsdl');\n"
+                    "$client->CreateOrder([]);\n"
+                    "$client->CreateOrder([]);\n"
+                    "$client->CloseOrder([]);\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual(
+                ["CloseOrder", "CreateOrder"],
+                sorted(item.operation for item in result.integrations),
+            )
+            self.assertEqual(result.soap_operations, 2)
+
+    def test_distinct_soapclients_do_not_mix_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Soap.php": (
+                    "<?php\n"
+                    "$sales = new SoapClient('https://example.com/sales.wsdl');\n"
+                    "$stock = new SoapClient('https://example.com/stock.wsdl');\n"
+                    "$sales->CreateInvoice([]);\n"
+                    "$stock->ReserveItem([]);\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = {(item.service_value, item.operation) for item in result.integrations}
+            self.assertEqual(
+                {
+                    ("https://example.com/sales.wsdl", "CreateInvoice"),
+                    ("https://example.com/stock.wsdl", "ReserveItem"),
+                },
+                found,
+            )
+            self.assertEqual(result.soap_services, 2)
+            self.assertEqual(result.soap_operations, 2)
+
+    def test_reassigned_soapclient_variable_uses_nearest_source_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Soap.php": (
+                    "<?php\n"
+                    "$client = new SoapClient('https://example.com/a.wsdl');\n"
+                    "$client->FirstOperation([]);\n"
+                    "$client = new SoapClient('https://example.com/b.wsdl');\n"
+                    "$client->SecondOperation([]);\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = {(item.service_value, item.operation) for item in result.integrations}
+            self.assertEqual(
+                {
+                    ("https://example.com/a.wsdl", "FirstOperation"),
+                    ("https://example.com/b.wsdl", "SecondOperation"),
+                },
+                found,
+            )
+            first = next(item for item in result.integrations if item.operation == "FirstOperation")
+            second = next(item for item in result.integrations if item.operation == "SecondOperation")
+            self.assertEqual(first.evidence[0].line, 2)
+            self.assertEqual(second.evidence[0].line, 4)
+
+    def test_local_wsdl_contract_is_parsed_for_soap_operation(self) -> None:
+        wsdl = """<?xml version="1.0"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/" name="StockService">
+  <message name="GetStockRequest"/>
+  <message name="GetStockResponse"/>
+  <portType name="StockPortType">
+    <operation name="GetStock">
+      <input message="tns:GetStockRequest"/>
+      <output message="tns:GetStockResponse"/>
+    </operation>
+  </portType>
+  <binding name="StockBinding" type="tns:StockPortType">
+    <operation name="GetStock"/>
+  </binding>
+  <service name="StockService">
+    <port name="StockPort" binding="tns:StockBinding"/>
+  </service>
+</definitions>
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Soap.php": (
+                    "<?php\n"
+                    "$client = new SoapClient('service.wsdl');\n"
+                    "$client->GetStock([]);\n"
+                ),
+                "src/service.wsdl": wsdl,
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            soap = result.integrations[0]
+            self.assertEqual(soap.contract_status, "local_parsed")
+            self.assertEqual(soap.service, "StockService")
+            self.assertEqual(soap.port, "StockPort")
+            self.assertEqual(soap.binding, "StockBinding")
+            self.assertEqual(soap.input_message, "tns:GetStockRequest")
+            self.assertEqual(soap.output_message, "tns:GetStockResponse")
+            self.assertTrue(soap.defined_in_wsdl)
+            self.assertTrue(result.soap_operations_complete)
+            self.assertTrue(result.soap_contracts_complete)
+            self.assertTrue(result.discovery_complete)
+
+    def test_external_wsdl_keeps_contract_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Soap.php": (
+                    "<?php\n"
+                    "$client = new SoapClient('https://example.com/service.wsdl');\n"
+                    "$client->GetStock([]);\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual(result.integrations[0].contract_status, "external_not_snapshotted")
+            self.assertTrue(result.soap_operations_complete)
+            self.assertFalse(result.soap_contracts_complete)
+            self.assertIn("soap_contract_extraction_partial", {x.code for x in result.unresolved})
+            self.assertFalse(result.discovery_complete)
+
+    def test_soap_operations_do_not_increment_rest_endpoint_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "composer.json": json.dumps({"require": {"laravel/framework": "^11.0"}}),
+                "routes/api.php": "<?php\nRoute::get('/inventory/{id}', [InventoryController::class, 'show']);\n",
+                "src/Soap.php": (
+                    "<?php\n"
+                    "$client = new SoapClient('https://example.com/service.wsdl');\n"
+                    "$client->GetStock([]);\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual([("exposed", "GET", "/inventory/{id}")], sorted(_endpoint_set(result)))
+            self.assertEqual(result.soap_operations, 1)
+            self.assertEqual(len(result.integrations), 1)
+
+    def test_dynamic_soap_operation_name_remains_unresolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Soap.php": (
+                    "<?php\n"
+                    "$client = new SoapClient('https://example.com/service.wsdl');\n"
+                    "$client->__soapCall($operation, []);\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertEqual(result.integrations, [])
+            self.assertFalse(result.soap_operations_complete)
+            self.assertIn("soap_operation_unresolved", {x.code for x in result.unresolved})
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# Endpoint discovery v0.4.3
+# Endpoint discovery v0.4.4
 
 La fase `discover` convierte el inventario técnico de v0.3 en hallazgos HTTP concretos sin afirmar más de lo que puede demostrar.
 
@@ -39,7 +39,14 @@ PHP cURL cubre `curl_init`, `curl_setopt`, `curl_setopt_array([...])`, `curl_set
 
 La resolución de wrappers se limita a llamadas `$this->method(...)`, métodos definidos en la misma clase/archivo, literales, variables locales trazables, concatenaciones deterministas y helpers locales con retorno demostrable. Dispatch dinámico, herencia ambigua, callbacks, reflection, métodos externos o valores incompatibles quedan como `unresolved`.
 
-Integraciones: SOAP se emite en `integrations` con WSDL/operación cuando puede demostrarse. SOAP no se convierte en REST/OpenAPI y mantiene `discovery_complete=false` mientras la extracción WSDL sea parcial.
+Integraciones: SOAP se emite en `integrations`, no como endpoints REST/OpenAPI. El detector PHP `SoapClient` descubre operaciones directas y operaciones alcanzadas al pasar el cliente como argumento posicional a métodos de clases locales cuando la procedencia es inequívoca.
+
+SOAP distingue dos estados:
+
+- `soap_operations_complete`: todas las instancias `SoapClient` detectadas tienen operaciones demostrables.
+- `soap_contracts_complete`: las operaciones descubiertas están respaldadas por contratos WSDL reproducibles y versionados localmente.
+
+Si el WSDL es externo, no existe en el repositorio o la expresión de servicio no se puede resolver de forma determinista, las operaciones se conservan con `contract_status` parcial y `discovery_complete=false`.
 
 Los patrones dinámicos, `Route::resource`, `Route::apiResource`, `Route::any`, `Route::fallback`, grupos/prefijos no demostrados, rutas Slim dinámicas, clientes HTTP sin detector o integraciones no HTTP parciales quedan en `unresolved` y bloquean `discovery_complete`.
 
