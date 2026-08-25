@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asgard.local/schemas/findings.schema.json",
+  "title": "ASGARD API Audit Findings",
+  "type": "object",
+  "required": ["repository", "source_commit", "audit_timestamp", "status", "endpoints"],
+  "properties": {
+    "repository": {"type": "string", "minLength": 1},
+    "source_ref": {"type": "string"},
+    "source_commit": {"type": "string", "minLength": 7},
+    "audit_timestamp": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["complete", "partial", "failed"]},
+    "coverage_notes": {"type": "array", "items": {"type": "string"}},
+    "endpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["direction", "method", "path", "confidence", "evidence"],
+        "properties": {
+          "direction": {"enum": ["exposed", "consumed"]},
+          "method": {"type": "string"},
+          "path": {"type": "string"},
+          "api_name": {"type": ["string", "null"]},
+          "provider_repository": {"type": ["string", "null"]},
+          "consumer_repository": {"type": ["string", "null"]},
+          "authentication": {"type": ["string", "null"]},
+          "confidence": {"enum": ["confirmed", "probable", "unverified"]},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "kind"],
+              "properties": {
+                "path": {"type": "string"},
+                "line": {"type": ["integer", "null"], "minimum": 1},
+                "kind": {"enum": ["route", "controller", "http_client", "configuration", "test", "documentation", "runtime", "unknown"]},
+                "note": {"type": ["string", "null"]}
+              },
+              "additionalProperties": false
+            }
+          },
+          "notes": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
