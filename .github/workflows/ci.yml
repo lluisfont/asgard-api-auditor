@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+          check-latest: false
+
+      - name: Install project and locked dev tools
+        run: |
+          python -m pip install -e .
+          python -m pip install -r requirements-dev.lock
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Compile Python
+        run: python -m compileall -q src scripts
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Validate repository contracts
+        run: python scripts/validate_contracts.py
+
+      - name: Set up Node
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: '22.12.0'
+          check-latest: false
+
+      - name: Validate OpenAPI toolchain fixture
+        run: npx -y @redocly/cli@2.47.0 lint examples/minimal-openapi.yaml

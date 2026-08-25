@@ -3,46 +3,202 @@
   "$id": "https://asgard.local/schemas/findings.schema.json",
   "title": "ASGARD API Audit Findings",
   "type": "object",
-  "required": ["repository", "source_commit", "audit_timestamp", "status", "endpoints"],
+  "required": ["schema_version", "audit_id", "auditor_version", "repository", "repository_id", "source_ref", "source_commit", "audit_timestamp", "status", "coverage", "endpoints", "integration_surfaces", "unresolved", "artifacts"],
   "properties": {
+    "schema_version": {"const": "2.0"},
+    "audit_id": {"type": "string", "minLength": 8},
+    "auditor_version": {"type": "string", "minLength": 1},
     "repository": {"type": "string", "minLength": 1},
-    "source_ref": {"type": "string"},
-    "source_commit": {"type": "string", "minLength": 7},
+    "repository_id": {"type": "string", "minLength": 1},
+    "source_ref": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-fA-F]{7,64}$"},
     "audit_timestamp": {"type": "string", "format": "date-time"},
     "status": {"enum": ["complete", "partial", "failed"]},
-    "coverage_notes": {"type": "array", "items": {"type": "string"}},
-    "endpoints": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["direction", "method", "path", "confidence", "evidence"],
-        "properties": {
-          "direction": {"enum": ["exposed", "consumed"]},
-          "method": {"type": "string"},
-          "path": {"type": "string"},
-          "api_name": {"type": ["string", "null"]},
-          "provider_repository": {"type": ["string", "null"]},
-          "consumer_repository": {"type": ["string", "null"]},
-          "authentication": {"type": ["string", "null"]},
-          "confidence": {"enum": ["confirmed", "probable", "unverified"]},
-          "evidence": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["path", "kind"],
-              "properties": {
-                "path": {"type": "string"},
-                "line": {"type": ["integer", "null"], "minimum": 1},
-                "kind": {"enum": ["route", "controller", "http_client", "configuration", "test", "documentation", "runtime", "unknown"]},
-                "note": {"type": ["string", "null"]}
-              },
-              "additionalProperties": false
-            }
-          },
-          "notes": {"type": "array", "items": {"type": "string"}}
-        },
-        "additionalProperties": false
-      }
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "endpoints": {"type": "array", "items": {"$ref": "#/$defs/endpoint"}},
+    "integration_surfaces": {"type": "array", "items": {"$ref": "#/$defs/integrationSurface"}},
+    "unresolved": {"type": "array", "items": {"$ref": "#/$defs/unresolved"}},
+    "changes": {"$ref": "#/$defs/changes"},
+    "artifacts": {"$ref": "#/$defs/artifacts"},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "required": ["path", "kind"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "end_line": {"type": ["integer", "null"], "minimum": 1},
+        "symbol": {"type": ["string", "null"]},
+        "kind": {"enum": ["route", "controller", "http_client", "configuration", "test", "documentation", "runtime", "existing_spec", "webhook", "generated_sdk", "unknown"]},
+        "note": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "parameter": {
+      "type": "object",
+      "required": ["name", "location"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "location": {"enum": ["path", "query", "header", "cookie"]},
+        "required": {"type": ["boolean", "null"]},
+        "schema": {"type": ["object", "null"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "parameters": {"type": "array", "items": {"$ref": "#/$defs/parameter"}},
+        "content_type": {"type": ["string", "null"]},
+        "body_schema": {"type": ["object", "null"]},
+        "fields": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "required": ["status_codes"],
+      "properties": {
+        "status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}},
+        "content_type": {"type": ["string", "null"]},
+        "schema": {"type": ["object", "null"]},
+        "fields": {"type": "array", "items": {"type": "string"}},
+        "fields_used_by_consumer": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "endpoint": {
+      "type": "object",
+      "required": ["endpoint_id", "direction", "surface_type", "method", "path", "confidence", "confidence_reason", "evidence"],
+      "properties": {
+        "endpoint_id": {"type": "string", "minLength": 1},
+        "direction": {"enum": ["exposed", "consumed"]},
+        "surface_type": {"const": "http"},
+        "method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"]},
+        "path": {"type": "string", "minLength": 1},
+        "base_url": {"type": ["string", "null"]},
+        "api_id": {"type": ["string", "null"]},
+        "api_name": {"type": ["string", "null"]},
+        "provider_repository": {"type": ["string", "null"]},
+        "consumer_repository": {"type": ["string", "null"]},
+        "handler": {"type": ["string", "null"]},
+        "authentication": {"type": ["string", "null"]},
+        "authorization": {"type": ["string", "null"]},
+        "request": {"$ref": "#/$defs/request"},
+        "response": {"$ref": "#/$defs/response"},
+        "confidence": {"enum": ["confirmed", "probable", "unverified"]},
+        "confidence_reason": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "detector": {
+      "type": "object",
+      "required": ["detector_id", "detector_version", "category", "status", "files_scanned"],
+      "properties": {
+        "detector_id": {"type": "string", "minLength": 1},
+        "detector_version": {"type": "string", "minLength": 1},
+        "category": {"enum": ["inventory", "exposed", "consumed", "framework", "configuration", "existing_spec", "integration"]},
+        "status": {"enum": ["supported", "partial", "unsupported", "failed"]},
+        "files_scanned": {"type": "integer", "minimum": 0},
+        "supported_patterns": {"type": "array", "items": {"type": "string"}},
+        "unsupported_patterns": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["inventory_complete", "languages", "frameworks", "http_clients", "required_detector_categories", "detectors", "files_scanned", "files_excluded", "exclusion_rules", "unsupported_surfaces"],
+      "properties": {
+        "inventory_complete": {"type": "boolean"},
+        "languages": {"type": "array", "items": {"type": "string"}},
+        "frameworks": {"type": "array", "items": {"type": "string"}},
+        "http_clients": {"type": "array", "items": {"type": "string"}},
+        "detectors": {"type": "array", "items": {"$ref": "#/$defs/detector"}},
+        "files_scanned": {"type": "integer", "minimum": 0},
+        "files_excluded": {"type": "integer", "minimum": 0},
+        "exclusion_rules": {"type": "array", "items": {"type": "string"}},
+        "unsupported_surfaces": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "array", "items": {"type": "string"}},
+        "required_detector_categories": {"type": "array", "items": {"enum": ["inventory", "exposed", "consumed", "framework", "configuration", "existing_spec", "integration"]}}
+      },
+      "additionalProperties": false
+    },
+    "integrationSurface": {
+      "type": "object",
+      "required": ["surface_id", "type", "status", "direction", "confidence", "evidence"],
+      "properties": {
+        "surface_id": {"type": "string", "minLength": 1},
+        "type": {"enum": ["graphql", "websocket", "grpc", "soap", "sse", "webhook", "other"]},
+        "status": {"enum": ["confirmed", "probable", "unverified", "unsupported"]},
+        "direction": {"enum": ["exposed", "consumed", "bidirectional", "unknown"]},
+        "description": {"type": ["string", "null"]},
+        "confidence": {"enum": ["confirmed", "probable", "unverified"]},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "unresolved": {
+      "type": "object",
+      "required": ["unresolved_id", "category", "description", "impact", "evidence"],
+      "properties": {
+        "unresolved_id": {"type": "string", "minLength": 1},
+        "category": {"enum": ["coverage", "provider", "consumer", "schema", "authentication", "dynamic_url", "runtime_only", "other"]},
+        "description": {"type": "string", "minLength": 1},
+        "impact": {"enum": ["informational", "low", "medium", "high", "blocking"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
+    "breakingChange": {
+      "type": "object",
+      "required": ["change_id", "endpoint_id", "type", "severity", "description"],
+      "properties": {
+        "change_id": {"type": "string", "minLength": 1},
+        "endpoint_id": {"type": "string", "minLength": 1},
+        "type": {"enum": ["removed_endpoint", "method_changed", "path_changed", "request_changed", "response_changed", "auth_changed", "consumed_field_changed", "other"]},
+        "severity": {"enum": ["low", "medium", "high", "critical"]},
+        "description": {"type": "string", "minLength": 1},
+        "affected_consumers": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "changes": {
+      "type": "object",
+      "properties": {
+        "previous_audit_id": {"type": ["string", "null"]},
+        "added_endpoint_ids": {"type": "array", "items": {"type": "string"}},
+        "removed_endpoint_ids": {"type": "array", "items": {"type": "string"}},
+        "modified_endpoint_ids": {"type": "array", "items": {"type": "string"}},
+        "breaking_changes": {"type": "array", "items": {"$ref": "#/$defs/breakingChange"}}
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["generated", "validated", "not_applicable", "failed"]},
+        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "validation": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "artifacts": {
+      "type": "object",
+      "required": ["openapi.yaml", "api-knowledge.md", "audit-report.md"],
+      "properties": {
+        "openapi.yaml": {"$ref": "#/$defs/artifact"},
+        "api-knowledge.md": {"$ref": "#/$defs/artifact"},
+        "audit-report.md": {"$ref": "#/$defs/artifact"}
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

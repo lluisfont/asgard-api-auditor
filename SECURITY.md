@@ -12,17 +12,26 @@ Never commit or emit in generated artifacts:
 - API keys;
 - passwords;
 - private keys;
+- session identifiers;
 - production secrets;
-- connection strings containing credentials;
+- credential-bearing connection strings;
 - confidential source code copied from audited repositories;
-- customer data.
+- customer or personal data.
 
-When a detector encounters a secret-like value, it must record only that a credential mechanism exists and redact the value.
+When a detector encounters a secret-like value, it must record only the authentication/credential mechanism and redact the value.
 
-## Repository access
+## Audit access
 
-Audited repositories should be accessed with the minimum permissions required, preferably read-only for audit execution.
+Audited repositories should be accessed with the minimum permissions required, preferably read-only.
+
+## Generated artifacts
+
+Generated outputs must be treated according to the sensitivity of the audited repository. Security findings from private ASGARD repositories must not be published in this public tool repository.
+
+## Failure behavior
+
+If redaction cannot be guaranteed for a candidate artifact, publication must fail closed. A failed candidate must not replace the previous valid audit.
 
 ## Reporting
 
-Security findings discovered while auditing ASGARD repositories belong in the private audit output and must not be published in this public repository.
+Report vulnerabilities privately to the repository owner. Do not create public issues containing ASGARD secrets, private source excerpts or customer information.

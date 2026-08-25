@@ -6,7 +6,11 @@ build/
 dist/
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+coverage.xml
+htmlcov/
 output/
+.audit-staging/
 .env
 .env.*
 !.env.example

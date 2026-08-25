@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a reproducible auditor defect
+title: "[Bug] "
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the observed incorrect behavior without including private ASGARD source or secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Safe reproduction
+      description: Use synthetic/anonymous fixtures only.
+    validations:
+      required: true
