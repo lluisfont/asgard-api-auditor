@@ -1,0 +1,10 @@
+openapi: 3.1.2
+info:
+  title: "{{ api_title }}"
+  version: "{{ api_version }}"
+  description: "Contrato AS-IS reconstruido por ASGARD API Auditor."
+x-asgard-audit-id: "{{ audit_id }}"
+x-asgard-source-commit: "{{ source_commit }}"
+paths: {}
+components:
+  schemas: {}

@@ -1,0 +1,8 @@
+extends:
+  - recommended
+
+rules:
+  operation-operationId: error
+  operation-summary: warn
+  no-unused-components: warn
+  security-defined: warn

@@ -1,0 +1,3 @@
+# Exact top-level development tool versions used by CI.
+# Runtime dependencies are intentionally empty in v0.2.
+ruff==0.16.3

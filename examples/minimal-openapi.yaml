@@ -1,0 +1,10 @@
+openapi: 3.1.2
+info:
+  title: ASGARD API Auditor Validation Fixture
+  version: 0.2.0
+  description: Minimal OpenAPI fixture used only to validate the project toolchain.
+x-asgard-audit-id: "audit_fixture0001"
+x-asgard-source-commit: "0000000000000000000000000000000000000000"
+paths: {}
+components:
+  schemas: {}
