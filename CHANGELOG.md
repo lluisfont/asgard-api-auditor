@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 - 2026-08-26
+
+### Added
+
+- `asgard-api-auditor audit` now generates the four primary audit artifacts: `openapi.yaml`, `api-knowledge.md`, `findings.json` and `audit-report.md`.
+- Generated OpenAPI contains only proven exposed HTTP paths/methods and carries ASGARD audit/source traceability extensions.
+- API Knowledge retains exposed HTTP, consumed HTTP, non-HTTP integrations, evidence and unresolved discovery findings.
+- Findings generation maps discovery and technical-inventory evidence into the versioned findings contract.
+- Audit artifacts are validated together and atomically published using the existing fail-safe artifact pipeline.
+- `audit` accepts `--repository-id`, repeatable `--exclude-path`, `--allow-dirty` and repeatable `--soap-wsdl` mappings.
+
+### Changed
+
+- Full audit generation is no longer blocked, but v0.5.0 audit status remains deliberately `partial` because request/response/authentication/authorization enrichment is not yet implemented.
+- Consumed HTTP calls are never emitted as provider OpenAPI paths.
+- SOAP remains a separate integration surface and is never converted into REST/OpenAPI paths.
+- A blocking `contract-enrichment-v0.5.0` unresolved finding prevents structural artifact generation from being misrepresented as a complete behavioral contract.
+
 ## 0.4.5 - 2026-08-26
 
 ### Added
