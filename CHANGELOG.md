@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1 - 2026-08-26
+
+### Fixed
+
+- OpenAPI generation canonicalizes source route templates that differ only by parameter names when their HTTP methods are distinct, avoiding invalid duplicate path templates without dropping operations.
+- Canonicalized operations preserve the exact source path and original parameter name through `x-asgard-source-path`, `x-asgard-source-paths` and `x-asgard-source-parameter-name` traceability extensions.
+- Multiple source routes with the same template shape and the same HTTP method now fail closed instead of being overwritten or silently merged.
+
+### Changed
+
+- Redocly keeps identical template paths as an error while treating source-preserved trailing slashes as guidance rather than rewriting observed behavior.
+- Unknown server URLs and security schemes remain intentionally uninvented until contract enrichment proves them.
+
 ## 0.5.0 - 2026-08-26
 
 ### Added
