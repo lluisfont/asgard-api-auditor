@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .detectors.integrations import SOAP_DETECTOR_ID, SOAP_DETECTOR_VERSION
 from .discovery_types import DiscoveryIssue, IntegrationFinding
-from .models import DetectorCoverage, Evidence
+from .models import DetectorCoverage
 
 _PARSED_STATUSES = {"local_parsed", "provided_snapshot_parsed"}
 
