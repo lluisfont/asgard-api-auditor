@@ -1,0 +1,6 @@
+* @lluisfont
+/.github/ @lluisfont
+/schemas/ @lluisfont
+/src/asgard_api_auditor/completion.py @lluisfont
+/src/asgard_api_auditor/artifacts.py @lluisfont
+/AGENTS.md @lluisfont

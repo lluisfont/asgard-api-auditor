@@ -1,0 +1,22 @@
+name: Detector request
+description: Request support for an integration pattern/framework
+title: "[Detector] "
+labels: []
+body:
+  - type: input
+    id: technology
+    attributes:
+      label: Technology / pattern
+    validations:
+      required: true
+  - type: textarea
+    id: patterns
+    attributes:
+      label: Patterns to support
+      description: Describe patterns generically; do not paste proprietary source.
+    validations:
+      required: true
+  - type: textarea
+    id: edge_cases
+    attributes:
+      label: Known edge cases
