@@ -41,8 +41,11 @@ def main() -> int:
             json.dumps({"require": {"slim/slim": "^4.14"}}), encoding="utf-8"
         )
         (repo / "routes.php").write_text(
-            "<?php\n$app->get('/inventory/{id}', $handler);\n"
-            "$app->post('/inventory', $handler);\n",
+            "<?php\n"
+            "$app->get('/inventory/{id}', $handler);\n"
+            "$app->post('/inventory', $handler);\n"
+            "$app->get('/pedidos/{idcliente}', $handler);\n"
+            "$app->put('/pedidos/{idpedido}', $handler);\n",
             encoding="utf-8",
         )
         _git(repo, "add", ".")
