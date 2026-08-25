@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Iterable
 
 from . import __version__
 from .constants import INVENTORY_SCOPE_VERSION, TECHNICAL_INVENTORY_SCHEMA_VERSION
@@ -187,8 +187,13 @@ def _detector_plan(
         categories.add("existing_spec")
         hints.add("existing_spec:openapi-or-swagger")
     order: tuple[DetectorCategory, ...] = (
-        "inventory", "framework", "configuration", "existing_spec",
-        "exposed", "consumed", "integration",
+        "inventory",
+        "framework",
+        "configuration",
+        "existing_spec",
+        "exposed",
+        "consumed",
+        "integration",
     )
     return [item for item in order if item in categories], sorted(hints)
 
