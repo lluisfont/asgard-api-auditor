@@ -335,7 +335,7 @@ def _group_openapi_paths(
         by_shape.setdefault(_path_shape(endpoint.path), []).append(endpoint)
 
     groups: list[tuple[str, list[str], list[EndpointFinding]]] = []
-    for shape, group in by_shape.items():
+    for _shape, group in by_shape.items():
         source_paths = sorted({endpoint.path for endpoint in group})
         canonical_path = source_paths[0] if len(source_paths) == 1 else _canonical_path(source_paths[0])
         methods: dict[str, EndpointFinding] = {}
