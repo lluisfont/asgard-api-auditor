@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.5 - 2026-08-26
+
+### Added
+
+- Repeatable `--soap-wsdl SERVICE=PATH` mappings for explicitly supplying repository-local SOAP contract snapshots.
+- SOAP snapshot validation requires the WSDL path to remain inside the audited repository and be tracked by Git.
+- SOAP operations discovered in code are validated against the supplied WSDL; missing operations produce blocking `soap_operation_not_in_wsdl` findings.
+- Explicit WSDL snapshots enrich SOAP findings with service, port, binding, input message and output message metadata.
+
+### Changed
+
+- SOAP contract completion can become `true` when all detected SOAP operations are backed by valid local or explicitly supplied versioned WSDL snapshots.
+- Discovery never downloads WSDLs from the network; reproducibility remains mandatory.
+
 ## 0.4.4 - 2026-08-26
 
 ### Added

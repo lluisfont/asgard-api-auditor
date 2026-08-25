@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
 
 from . import __version__
 from .constants import ENDPOINT_DISCOVERY_SCHEMA_VERSION
@@ -14,6 +15,7 @@ from .discovery_types import DiscoveryIssue, EndpointDiscovery
 from .discovery_utils import iter_source_files
 from .inventory import inventory_repository
 from .models import AuditTarget, DetectorCoverage, EndpointFinding
+from .soap_contracts import apply_soap_wsdl_snapshots
 
 _SUPPORTED_SERVER_FRAMEWORKS = {"laravel", "slim"}
 
@@ -34,7 +36,12 @@ def _dedupe_endpoints(endpoints: list[EndpointFinding]) -> list[EndpointFinding]
     return sorted(by_id.values(), key=lambda item: (item.direction, item.path, item.method))
 
 
-def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> EndpointDiscovery:
+def discover_endpoints(
+    target: AuditTarget,
+    *,
+    allow_dirty: bool = False,
+    soap_wsdl: dict[str, Path] | None = None,
+) -> EndpointDiscovery:
     inventory = inventory_repository(target, allow_dirty=allow_dirty)
     repository = target.repository.resolve()
     files = iter_source_files(repository, target.exclude_paths)
@@ -141,6 +148,14 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
         found, soap_issues, soap_coverage, soap_operations_complete, soap_contracts_complete = (
             detect_soap_integrations(repository, files)
         )
+        soap_issues, soap_coverage, soap_contracts_complete = apply_soap_wsdl_snapshots(
+            repository,
+            found,
+            soap_issues,
+            soap_coverage,
+            soap_operations_complete,
+            soap_wsdl,
+        )
         integrations.extend(found)
         issues.extend(soap_issues)
         coverage.append(soap_coverage)
@@ -200,6 +215,10 @@ def discover_endpoints(target: AuditTarget, *, allow_dirty: bool = False) -> End
             "and contract enrichment follow later."
         ),
     ]
+    if soap_wsdl:
+        notes.append(
+            "SOAP WSDL snapshots were supplied explicitly from repository-local paths; no network retrieval was performed."
+        )
     return EndpointDiscovery(
         schema_version=ENDPOINT_DISCOVERY_SCHEMA_VERSION,
         auditor_version=__version__,

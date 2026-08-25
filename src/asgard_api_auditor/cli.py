@@ -37,6 +37,15 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--output", type=Path, help="Optional JSON output file")
     discover.add_argument("--allow-dirty", action="store_true", help="Allow diagnostic discovery on dirty tree")
     discover.add_argument("--exclude-path", action="append", help="Repository-relative path to exclude; may be repeated")
+    discover.add_argument(
+        "--soap-wsdl",
+        action="append",
+        metavar="SERVICE=PATH",
+        help=(
+            "Map a SOAP service expression/value to a versioned repository-local WSDL snapshot; "
+            "may be repeated"
+        ),
+    )
 
     audit = subparsers.add_parser("audit", help="Run the full API audit (not implemented yet).")
     audit.add_argument("repository", type=Path, help="Local Git repository root")
@@ -70,6 +79,24 @@ def _emit_json(payload: dict[str, object], output: Path | None) -> None:
         print(content, end="")
 
 
+def _parse_soap_wsdl(values: list[str] | None) -> dict[str, Path]:
+    mappings: dict[str, Path] = {}
+    for raw in values or []:
+        if "=" not in raw:
+            raise ValueError("--soap-wsdl must use SERVICE=PATH syntax")
+        service, path = raw.split("=", 1)
+        service = service.strip()
+        path = path.strip()
+        if not service or not path:
+            raise ValueError("--soap-wsdl requires non-empty SERVICE and PATH")
+        candidate = Path(path)
+        existing = mappings.get(service)
+        if existing is not None and existing != candidate:
+            raise ValueError(f"--soap-wsdl service '{service}' is mapped more than once")
+        mappings[service] = candidate
+    return mappings
+
+
 def _inventory_command(args: argparse.Namespace) -> int:
     target = AuditTarget(
         repository=args.repository,
@@ -94,8 +121,13 @@ def _discover_command(args: argparse.Namespace) -> int:
         exclude_paths=tuple(args.exclude_path or ()),
     )
     try:
-        discovery = discover_endpoints(target, allow_dirty=args.allow_dirty)
-    except InventoryError as exc:
+        soap_wsdl = _parse_soap_wsdl(args.soap_wsdl)
+        discovery = discover_endpoints(
+            target,
+            allow_dirty=args.allow_dirty,
+            soap_wsdl=soap_wsdl,
+        )
+    except (InventoryError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     _emit_json(discovery_to_dict(discovery), args.output)
