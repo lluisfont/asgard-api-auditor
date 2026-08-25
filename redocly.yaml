@@ -2,6 +2,11 @@ extends:
   - recommended
 
 rules:
+  # The auditor must never invent a server URL merely to satisfy documentation linting.
+  # `servers` may be absent until runtime/configuration evidence proves a real base URL.
+  no-empty-servers: off
+  # AS-IS contracts describe observed integration behavior, not API licensing terms.
+  info-license: off
   operation-operationId: error
   operation-summary: warn
   no-unused-components: warn
