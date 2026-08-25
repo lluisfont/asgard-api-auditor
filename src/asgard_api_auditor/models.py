@@ -34,6 +34,14 @@ DetectorCategory = Literal[
 ]
 IntegrationType = Literal["graphql", "websocket", "grpc", "soap", "sse", "webhook", "other"]
 IntegrationStatus = Literal["confirmed", "probable", "unverified", "unsupported"]
+InventoryEvidenceKind = Literal["manifest", "source", "configuration", "existing_spec"]
+TechnologyKind = Literal[
+    "language",
+    "framework",
+    "http_client",
+    "integration_surface",
+    "existing_spec",
+]
 
 
 @dataclass(frozen=True)
@@ -41,6 +49,7 @@ class AuditTarget:
     repository: Path
     ref: str = "HEAD"
     output: Path = Path("output")
+    repository_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -151,3 +160,49 @@ class IntegrationSurfaceFinding:
     evidence: tuple[Evidence, ...]
     description: str | None = None
     notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InventoryEvidence:
+    path: str
+    line: int | None = None
+    kind: InventoryEvidenceKind = "source"
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class TechnologyDetection:
+    kind: TechnologyKind
+    name: str
+    confidence: Confidence
+    evidence: tuple[InventoryEvidence, ...]
+
+
+@dataclass
+class TechnicalInventory:
+    schema_version: str
+    scope_version: str
+    auditor_version: str
+    repository: str
+    repository_id: str
+    repository_identity_source: str
+    source_ref: str
+    source_commit: str
+    working_tree_dirty: bool
+    inventory_complete: bool
+    files_scanned: int
+    text_files_inspected: int
+    excluded_roots: list[str] = field(default_factory=list)
+    skipped_oversize_files: list[str] = field(default_factory=list)
+    skipped_symlinks: list[str] = field(default_factory=list)
+    manifest_errors: list[str] = field(default_factory=list)
+    manifests: list[str] = field(default_factory=list)
+    submodules: list[str] = field(default_factory=list)
+    languages: list[TechnologyDetection] = field(default_factory=list)
+    frameworks: list[TechnologyDetection] = field(default_factory=list)
+    http_clients: list[TechnologyDetection] = field(default_factory=list)
+    integration_surfaces: list[TechnologyDetection] = field(default_factory=list)
+    existing_specs: list[TechnologyDetection] = field(default_factory=list)
+    required_detector_categories: list[DetectorCategory] = field(default_factory=list)
+    detector_hints: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)

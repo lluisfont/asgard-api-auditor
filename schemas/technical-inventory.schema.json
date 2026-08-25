@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asgard.local/schemas/technical-inventory.schema.json",
+  "title": "ASGARD API Auditor Technical Inventory",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "scope_version",
+    "auditor_version",
+    "repository",
+    "repository_id",
+    "repository_identity_source",
+    "source_ref",
+    "source_commit",
+    "working_tree_dirty",
+    "inventory_complete",
+    "files_scanned",
+    "text_files_inspected",
+    "excluded_roots",
+    "skipped_oversize_files",
+    "skipped_symlinks",
+    "manifest_errors",
+    "manifests",
+    "submodules",
+    "languages",
+    "frameworks",
+    "http_clients",
+    "integration_surfaces",
+    "existing_specs",
+    "required_detector_categories",
+    "detector_hints",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "scope_version": {"const": "1.0"},
+    "auditor_version": {"type": "string", "minLength": 1},
+    "repository": {"type": "string", "minLength": 1},
+    "repository_id": {"type": "string", "minLength": 1},
+    "repository_identity_source": {"enum": ["explicit", "origin", "directory-name"]},
+    "source_ref": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-fA-F]{7,64}$"},
+    "working_tree_dirty": {"type": "boolean"},
+    "inventory_complete": {"type": "boolean"},
+    "files_scanned": {"type": "integer", "minimum": 0},
+    "text_files_inspected": {"type": "integer", "minimum": 0},
+    "excluded_roots": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "skipped_oversize_files": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "skipped_symlinks": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "manifest_errors": {"type": "array", "items": {"type": "string"}},
+    "manifests": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "submodules": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "languages": {"type": "array", "items": {"$ref": "#/$defs/technologyDetection"}},
+    "frameworks": {"type": "array", "items": {"$ref": "#/$defs/technologyDetection"}},
+    "http_clients": {"type": "array", "items": {"$ref": "#/$defs/technologyDetection"}},
+    "integration_surfaces": {"type": "array", "items": {"$ref": "#/$defs/technologyDetection"}},
+    "existing_specs": {"type": "array", "items": {"$ref": "#/$defs/technologyDetection"}},
+    "required_detector_categories": {
+      "type": "array",
+      "items": {"enum": ["inventory", "exposed", "consumed", "framework", "configuration", "existing_spec", "integration"]},
+      "uniqueItems": true
+    },
+    "detector_hints": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "required": ["path", "line", "kind", "note"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "kind": {"enum": ["manifest", "source", "configuration", "existing_spec"]},
+        "note": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "technologyDetection": {
+      "type": "object",
+      "required": ["kind", "name", "confidence", "evidence"],
+      "properties": {
+        "kind": {"enum": ["language", "framework", "http_client", "integration_surface", "existing_spec"]},
+        "name": {"type": "string", "minLength": 1},
+        "confidence": {"enum": ["confirmed", "probable", "unverified"]},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
