@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     inventory.add_argument("--repository-id", help="Stable logical repository ID")
     inventory.add_argument("--output", type=Path, help="Optional JSON output file")
     inventory.add_argument("--allow-dirty", action="store_true", help="Allow diagnostic scan of dirty tree")
+    inventory.add_argument("--exclude-path", action="append", help="Repository-relative path to exclude; may be repeated")
 
     discover = subparsers.add_parser("discover", help="Discover exposed and consumed HTTP endpoints")
     discover.add_argument("repository", type=Path, help="Local Git repository root")
@@ -35,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--repository-id", help="Stable logical repository ID")
     discover.add_argument("--output", type=Path, help="Optional JSON output file")
     discover.add_argument("--allow-dirty", action="store_true", help="Allow diagnostic discovery on dirty tree")
+    discover.add_argument("--exclude-path", action="append", help="Repository-relative path to exclude; may be repeated")
 
     audit = subparsers.add_parser("audit", help="Run the full API audit (not implemented yet).")
     audit.add_argument("repository", type=Path, help="Local Git repository root")
@@ -69,7 +71,12 @@ def _emit_json(payload: dict[str, object], output: Path | None) -> None:
 
 
 def _inventory_command(args: argparse.Namespace) -> int:
-    target = AuditTarget(repository=args.repository, ref=args.ref, repository_id=args.repository_id)
+    target = AuditTarget(
+        repository=args.repository,
+        ref=args.ref,
+        repository_id=args.repository_id,
+        exclude_paths=tuple(args.exclude_path or ()),
+    )
     try:
         inventory = inventory_repository(target, allow_dirty=args.allow_dirty)
     except InventoryError as exc:
@@ -80,7 +87,12 @@ def _inventory_command(args: argparse.Namespace) -> int:
 
 
 def _discover_command(args: argparse.Namespace) -> int:
-    target = AuditTarget(repository=args.repository, ref=args.ref, repository_id=args.repository_id)
+    target = AuditTarget(
+        repository=args.repository,
+        ref=args.ref,
+        repository_id=args.repository_id,
+        exclude_paths=tuple(args.exclude_path or ()),
+    )
     try:
         discovery = discover_endpoints(target, allow_dirty=args.allow_dirty)
     except InventoryError as exc:

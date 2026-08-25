@@ -77,6 +77,28 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 3)
             self.assertFalse(json.loads(stdout.getvalue())["discovery_complete"])
 
+    def test_discover_accepts_repeated_exclude_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(Path(tmp), with_supported_api=True)
+            (repo / "audit").mkdir()
+            (repo / "audit" / "bad.ts").write_text("fetch(buildUrl());\n", encoding="utf-8")
+            (repo / "work_sample").mkdir()
+            (repo / "work_sample" / "bad.ts").write_text("fetch(buildUrl());\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "excluded fixtures"], check=True)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main([
+                    "discover",
+                    str(repo),
+                    "--exclude-path",
+                    "audit",
+                    "--exclude-path",
+                    "work_sample",
+                ])
+            self.assertEqual(code, 0)
+            self.assertTrue(json.loads(stdout.getvalue())["discovery_complete"])
+
     def test_full_audit_remains_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _init_repo(Path(tmp))

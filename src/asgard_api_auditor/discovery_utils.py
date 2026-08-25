@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .inventory_catalog import CODE_EXTENSIONS, EXCLUDED_DIRS, MAX_TEXT_FILE_BYTES
+from .path_filters import is_excluded_path, normalize_exclude_paths
 
 
 _PLACEHOLDER_PATTERNS = (
@@ -21,7 +22,8 @@ def line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def iter_source_files(repository: Path) -> list[Path]:
+def iter_source_files(repository: Path, exclude_paths: tuple[str, ...] = ()) -> list[Path]:
+    exclude_paths = normalize_exclude_paths(repository, exclude_paths)
     files: list[Path] = []
     for root, dirs, filenames in os.walk(repository, topdown=True, followlinks=False):
         root_path = Path(root)
@@ -29,9 +31,12 @@ def iter_source_files(repository: Path) -> list[Path]:
             name
             for name in sorted(dirs)
             if name not in EXCLUDED_DIRS and not (root_path / name).is_symlink()
+            and not is_excluded_path(repository, root_path / name, exclude_paths)
         ]
         for filename in sorted(filenames):
             path = root_path / filename
+            if is_excluded_path(repository, path, exclude_paths):
+                continue
             if path.is_symlink() or not path.is_file():
                 continue
             if path.suffix.lower() not in CODE_EXTENSIONS:

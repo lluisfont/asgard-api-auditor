@@ -75,6 +75,68 @@ class TechnicalInventoryTests(unittest.TestCase):
             self.assertIn("consumed", result.required_detector_categories)
             self.assertIn("framework:laravel", result.detector_hints)
 
+    def test_detects_slim_and_angular_from_manifests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(
+                Path(tmp),
+                {
+                    "composer.json": json.dumps({"require": {"slim/slim": "^4.14"}}),
+                    "package.json": json.dumps(
+                        {"dependencies": {"@angular/core": "^17.0.0", "@angular/common": "^17.0.0"}}
+                    ),
+                    "src/app.component.ts": "import { Component } from '@angular/core';\n",
+                },
+            )
+            result = inventory_repository(AuditTarget(repo))
+            frameworks = {item.name: item for item in result.frameworks}
+            clients = {item.name: item for item in result.http_clients}
+            self.assertEqual(frameworks["slim"].confidence, "confirmed")
+            self.assertEqual(frameworks["angular"].confidence, "confirmed")
+            self.assertEqual(clients["angular-httpclient"].confidence, "confirmed")
+            self.assertIn("exposed:slim", result.detector_hints)
+
+    def test_angular_httpclient_is_not_dotnet_httpclient(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(
+                Path(tmp),
+                {
+                    "src/api.service.ts": (
+                        "import { HttpClient } from '@angular/common/http';\n"
+                        "constructor(private _http: HttpClient) {}\n"
+                    )
+                },
+            )
+            result = inventory_repository(AuditTarget(repo))
+            self.assertIn("angular-httpclient", _names(result.http_clients))
+            self.assertNotIn("dotnet-httpclient", _names(result.http_clients))
+
+    def test_pdo_fetch_is_not_javascript_fetch_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(
+                Path(tmp),
+                {"src/UserRepository.php": "<?php\n$row = $stmt->fetch(PDO::FETCH_ASSOC);\n"},
+            )
+            result = inventory_repository(AuditTarget(repo))
+            self.assertNotIn("fetch", _names(result.http_clients))
+
+    def test_excluded_paths_do_not_make_inventory_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(
+                Path(tmp),
+                {
+                    "src/index.ts": "export const answer = 42;\n",
+                    "audit/bad.json": "{",
+                    "work_sample/api.ts": "import axios from 'axios';\n",
+                },
+            )
+            result = inventory_repository(
+                AuditTarget(repo, exclude_paths=("audit", "work_sample"))
+            )
+            self.assertTrue(result.inventory_complete)
+            self.assertIn("audit", result.excluded_roots)
+            self.assertIn("work_sample", result.excluded_roots)
+            self.assertNotIn("axios", _names(result.http_clients))
+
     def test_detects_flutter_dio_and_graphql_from_pubspec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _init_repo(

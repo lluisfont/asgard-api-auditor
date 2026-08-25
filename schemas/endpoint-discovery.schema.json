@@ -6,7 +6,7 @@
   "required": [
     "schema_version", "auditor_version", "repository", "repository_id",
     "source_ref", "source_commit", "inventory_complete", "discovery_complete",
-    "endpoints", "detectors", "unresolved", "notes"
+    "endpoints", "integrations", "detectors", "unresolved", "notes"
   ],
   "properties": {
     "schema_version": {"const": "1.0"},
@@ -18,6 +18,7 @@
     "inventory_complete": {"type": "boolean"},
     "discovery_complete": {"type": "boolean"},
     "endpoints": {"type": "array", "items": {"$ref": "#/$defs/endpoint"}},
+    "integrations": {"type": "array", "items": {"$ref": "#/$defs/integration"}},
     "detectors": {"type": "array", "items": {"$ref": "#/$defs/detector"}},
     "unresolved": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
     "notes": {"type": "array", "items": {"type": "string"}}
@@ -73,6 +74,21 @@
         "files_scanned": {"type": "integer", "minimum": 0},
         "supported_patterns": {"type": "array", "items": {"type": "string"}},
         "unsupported_patterns": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "integration": {
+      "type": "object",
+      "required": ["type", "direction", "confidence", "confidence_reason", "evidence"],
+      "properties": {
+        "type": {"enum": ["soap", "graphql", "websocket", "grpc", "sse", "webhook", "other"]},
+        "direction": {"enum": ["exposed", "consumed", "bidirectional", "unknown"]},
+        "confidence": {"enum": ["confirmed", "probable", "unverified"]},
+        "confidence_reason": {"type": "string", "minLength": 1},
+        "wsdl": {"type": ["string", "null"]},
+        "operation": {"type": ["string", "null"]},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
         "notes": {"type": "array", "items": {"type": "string"}}
       },
       "additionalProperties": false

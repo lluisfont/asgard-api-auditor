@@ -12,14 +12,20 @@ La pregunta operativa es:
 
 ## Estado
 
-**v0.4 — discovery real de endpoints HTTP.**
+**v0.4.1 — discovery real de endpoints HTTP con soporte Warehouse.**
 
-La v0.3 detecta tecnologías y superficies. La v0.4 utiliza ese inventario para localizar endpoints HTTP expuestos y consumidos con evidencia concreta y falla de forma cerrada ante patrones dinámicos o todavía no soportados.
+La v0.3 detecta tecnologías y superficies. La v0.4.x utiliza ese inventario para localizar endpoints HTTP expuestos y consumidos con evidencia concreta y falla de forma cerrada ante patrones dinámicos o todavía no soportados.
 
 ## Inventario técnico
 
 ```bash
 asgard-api-auditor inventory /ruta/al/repositorio
+```
+
+Excluir fixtures o artefactos locales:
+
+```bash
+asgard-api-auditor inventory /ruta/al/repositorio --exclude-path audit --exclude-path work_sample
 ```
 
 ## Discovery de endpoints
@@ -34,7 +40,9 @@ Guardar resultado:
 asgard-api-auditor discover /ruta/al/repositorio --output endpoint-discovery.json
 ```
 
-Actualmente incluye detectores para Laravel, Axios, Fetch, Guzzle, Laravel HTTP facade, Dio y Dart `http`.
+Actualmente incluye detectores para Laravel, Slim, Angular `HttpClient`, Axios, Fetch, Guzzle, Laravel HTTP facade, PHP cURL, Dio y Dart `http`.
+
+Las integraciones SOAP se reportan en `integrations`, no como endpoints REST. Hasta que exista extracción completa de WSDL, SOAP mantiene el detector en estado `partial`.
 
 Si aparece un framework, cliente o patrón no soportado, `discovery_complete=false` y el problema queda explícitamente registrado en `unresolved`.
 

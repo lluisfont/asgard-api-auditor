@@ -10,6 +10,7 @@ EvidenceType = Literal[
     "route",
     "controller",
     "http_client",
+    "integration",
     "configuration",
     "test",
     "documentation",
@@ -50,6 +51,7 @@ class AuditTarget:
     ref: str = "HEAD"
     output: Path = Path("output")
     repository_id: str | None = None
+    exclude_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

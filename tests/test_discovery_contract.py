@@ -17,7 +17,17 @@ class EndpointDiscoveryContractTests(unittest.TestCase):
     def test_schema_requires_provenance_coverage_and_unresolved(self) -> None:
         schema = json.loads((ROOT / "schemas" / "endpoint-discovery.schema.json").read_text(encoding="utf-8"))
         required = set(schema["required"])
-        self.assertTrue({"repository_id", "source_ref", "source_commit", "inventory_complete", "discovery_complete", "endpoints", "detectors", "unresolved"}.issubset(required))
+        self.assertTrue({
+            "repository_id",
+            "source_ref",
+            "source_commit",
+            "inventory_complete",
+            "discovery_complete",
+            "endpoints",
+            "integrations",
+            "detectors",
+            "unresolved",
+        }.issubset(required))
 
 
 if __name__ == "__main__":

@@ -105,6 +105,7 @@ def validate_discovery_schema() -> None:
         "inventory_complete",
         "discovery_complete",
         "endpoints",
+        "integrations",
         "detectors",
         "unresolved",
     }

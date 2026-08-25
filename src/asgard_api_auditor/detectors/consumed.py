@@ -9,7 +9,16 @@ from ..discovery_types import DiscoveryIssue
 from ..discovery_utils import line_number, normalize_literal_url, read_source, relative_path
 from ..models import DetectorCoverage, EndpointFinding, Evidence
 
-_SUPPORTED = {"axios", "fetch", "guzzle", "laravel-http", "dio", "dart-http"}
+_SUPPORTED = {
+    "angular-httpclient",
+    "axios",
+    "fetch",
+    "guzzle",
+    "laravel-http",
+    "dio",
+    "dart-http",
+    "php-curl",
+}
 _METHODS = "get|post|put|patch|delete|head|options"
 
 
@@ -32,8 +41,12 @@ def _finding(
     client: str,
     *,
     confidence: str = "confirmed",
+    base_url: str | None = None,
+    endpoint_path: str | None = None,
+    extra_evidence: tuple[Evidence, ...] = (),
 ) -> EndpointFinding:
-    base_url, endpoint_path = normalize_literal_url(url)
+    if endpoint_path is None:
+        base_url, endpoint_path = normalize_literal_url(url)
     return EndpointFinding(
         direction="consumed",
         method=method.upper(),
@@ -42,8 +55,30 @@ def _finding(
         consumer_repository=repository.name,
         confidence=confidence,  # type: ignore[arg-type]
         confidence_reason=f"Literal {client} HTTP method and URL found in source.",
-        evidence=[_evidence(repository, path, text, offset, f"{client} HTTP call")],
+        evidence=[
+            _evidence(repository, path, text, offset, f"{client} HTTP call"),
+            *extra_evidence,
+        ],
     )
+
+
+def _method_from_options(options: str, default: str = "GET") -> str:
+    method_match = re.search(r"\bmethod\s*:\s*['\"]([A-Za-z]+)['\"]", options)
+    if method_match:
+        return method_match.group(1).upper()
+    return default
+
+
+def _literal_value(expression: str) -> str | None:
+    expression = expression.strip()
+    match = re.fullmatch(r"(?P<quote>['\"`])(?P<value>.*?)(?P=quote)", expression, re.DOTALL)
+    if not match:
+        return None
+    return match.group("value")
+
+
+def _split_concat(expression: str) -> list[str]:
+    return [part.strip() for part in expression.split("+") if part.strip()]
 
 
 def _axios(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], list[DiscoveryIssue], int]:
@@ -110,6 +145,11 @@ def _fetch(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], 
         r"(?P<options>\s*,\s*\{.*?\})?\s*\)",
         re.IGNORECASE | re.DOTALL,
     )
+    this_property = re.compile(
+        r"\bfetch\s*\(\s*this\.(?P<property>[A-Za-z_]\w*)"
+        r"(?P<options>\s*,\s*\{.*?\})?\s*\)",
+        re.IGNORECASE | re.DOTALL,
+    )
     any_call = re.compile(r"\bfetch\s*\(")
     for path in files:
         if path.suffix.lower() not in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue"}:
@@ -118,16 +158,47 @@ def _fetch(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], 
         if text is None or "fetch" not in text:
             continue
         scanned += 1
+        property_literals: dict[str, tuple[str, int]] = {}
+        for assignment in re.finditer(
+            r"\bthis\.(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<quote>['\"`])(?P<value>.*?)(?P=quote)",
+            text,
+            re.DOTALL,
+        ):
+            property_literals[assignment.group("name")] = (assignment.group("value"), assignment.start())
+        for field in re.finditer(
+            r"\b(?:private|public|protected|readonly|static|\s)+"
+            r"(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<quote>['\"`])(?P<value>.*?)(?P=quote)",
+            text,
+            re.DOTALL,
+        ):
+            property_literals.setdefault(field.group("name"), (field.group("value"), field.start()))
         recognized = set()
         for match in literal.finditer(text):
             recognized.add(match.start())
-            method = "GET"
-            options = match.group("options") or ""
-            method_match = re.search(r"\bmethod\s*:\s*['\"]([A-Za-z]+)['\"]", options)
-            if method_match:
-                method = method_match.group(1).upper()
+            method = _method_from_options(match.group("options") or "")
             endpoints.append(
                 _finding(repository, path, text, match.start(), method, match.group("url"), "fetch")
+            )
+        for match in this_property.finditer(text):
+            property_name = match.group("property")
+            resolved = property_literals.get(property_name)
+            if resolved is None:
+                continue
+            recognized.add(match.start())
+            url, assignment_offset = resolved
+            endpoints.append(
+                _finding(
+                    repository,
+                    path,
+                    text,
+                    match.start(),
+                    _method_from_options(match.group("options") or ""),
+                    url,
+                    "fetch",
+                    extra_evidence=(
+                        _evidence(repository, path, text, assignment_offset, "literal fetch URL property"),
+                    ),
+                )
             )
         for call in any_call.finditer(text):
             if call.start() not in recognized:
@@ -237,6 +308,172 @@ def _laravel_http(repository: Path, files: list[Path]) -> tuple[list[EndpointFin
     return endpoints, issues, scanned
 
 
+def _angular_global_values(text: str) -> dict[str, tuple[str, int]]:
+    values: dict[str, tuple[str, int]] = {}
+    for match in re.finditer(
+        r"\bGLOBAL\.(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<quote>['\"`])(?P<value>.*?)(?P=quote)",
+        text,
+        re.DOTALL,
+    ):
+        values[f"GLOBAL.{match.group('name')}"] = (match.group("value"), match.start())
+    for obj in re.finditer(r"\bGLOBAL\s*=\s*\{(?P<body>.*?)\}", text, re.DOTALL):
+        for prop in re.finditer(
+            r"\b(?P<name>[A-Za-z_]\w*)\s*:\s*(?P<quote>['\"`])(?P<value>.*?)(?P=quote)",
+            obj.group("body"),
+            re.DOTALL,
+        ):
+            values[f"GLOBAL.{prop.group('name')}"] = (
+                prop.group("value"),
+                obj.start() + prop.start(),
+            )
+    return values
+
+
+def _angular_this_values(
+    text: str,
+    globals_by_name: dict[str, tuple[str, int]],
+) -> dict[str, tuple[str, int]]:
+    values: dict[str, tuple[str, int]] = {}
+    for match in re.finditer(
+        r"\b(?:this\.)?(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<expr>[^;\n]+)",
+        text,
+        re.DOTALL,
+    ):
+        name = f"this.{match.group('name')}"
+        expression = match.group("expr").strip()
+        literal = _literal_value(expression)
+        if literal is not None:
+            values[name] = (literal, match.start())
+            continue
+        resolved = globals_by_name.get(expression)
+        if resolved is not None:
+            values[name] = (resolved[0], match.start())
+    return values
+
+
+def _placeholder_for_expression(expression: str) -> str:
+    name = expression.strip().removeprefix("this.").removeprefix("$")
+    name = re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_")
+    return "{" + (name or "value") + "}"
+
+
+def _resolve_angular_url(expression: str, values: dict[str, tuple[str, int]]) -> tuple[str | None, str | None, int | None]:
+    expression = expression.strip()
+    literal = _literal_value(expression)
+    if literal is not None:
+        base_url, endpoint_path = normalize_literal_url(literal)
+        return base_url, endpoint_path, None
+
+    parts = _split_concat(expression)
+    if not parts:
+        return None, None, None
+
+    first = parts[0]
+    resolved_first = values.get(first)
+    if resolved_first is not None and len(parts) > 1:
+        suffix = ""
+        for part in parts[1:]:
+            literal_part = _literal_value(part)
+            suffix += literal_part if literal_part is not None else _placeholder_for_expression(part)
+        assignment_offset = None if first.startswith("GLOBAL.") else resolved_first[1]
+        return resolved_first[0].rstrip("/"), "/" + suffix.lstrip("/"), assignment_offset
+
+    resolved_parts: list[str] = []
+    assignment_offset: int | None = None
+    for part in parts:
+        literal_part = _literal_value(part)
+        if literal_part is not None:
+            resolved_parts.append(literal_part)
+            continue
+        value = values.get(part)
+        if value is not None:
+            resolved_parts.append(value[0])
+            if not part.startswith("GLOBAL."):
+                assignment_offset = value[1]
+            continue
+        resolved_parts.append(_placeholder_for_expression(part))
+    base_url, endpoint_path = normalize_literal_url("".join(resolved_parts))
+    return base_url, endpoint_path, assignment_offset
+
+
+def _angular_httpclient(
+    repository: Path,
+    files: list[Path],
+) -> tuple[list[EndpointFinding], list[DiscoveryIssue], int]:
+    endpoints: list[EndpointFinding] = []
+    issues: list[DiscoveryIssue] = []
+    scanned = 0
+    global_values: dict[str, tuple[str, int]] = {}
+    for path in files:
+        if path.suffix.lower() not in {".ts", ".tsx"}:
+            continue
+        text = read_source(path)
+        if text is not None and "GLOBAL" in text:
+            global_values.update(_angular_global_values(text))
+
+    for path in files:
+        if path.suffix.lower() not in {".ts", ".tsx"}:
+            continue
+        text = read_source(path)
+        if text is None or "HttpClient" not in text:
+            continue
+        clients = set(
+            re.findall(
+                r"\b(?:private|public|protected|readonly|\s)+(?P<name>[A-Za-z_]\w*)\s*:\s*HttpClient\b",
+                text,
+            )
+        )
+        clients.update({"http", "_http"})
+        client_pattern = "|".join(re.escape(client) for client in sorted(clients, key=len, reverse=True))
+        calls = re.compile(
+            rf"\bthis\.(?P<object>{client_pattern})\.(?P<method>get|post|put|delete|patch)"
+            r"\s*\(\s*(?P<url>[^,\n;)]+)",
+            re.IGNORECASE,
+        )
+        any_call = re.compile(
+            rf"\bthis\.(?:{client_pattern})\.(?:get|post|put|delete|patch)\s*\(",
+            re.IGNORECASE,
+        )
+        values = _angular_this_values(text, {**global_values, **_angular_global_values(text)})
+        scanned += 1
+        recognized: set[int] = set()
+        for match in calls.finditer(text):
+            base_url, endpoint_path, assignment_offset = _resolve_angular_url(match.group("url"), values)
+            if endpoint_path is None:
+                continue
+            recognized.add(match.start())
+            extra_evidence: tuple[Evidence, ...] = ()
+            if assignment_offset is not None:
+                extra_evidence = (
+                    _evidence(repository, path, text, assignment_offset, "Angular base URL assignment"),
+                )
+            endpoints.append(
+                _finding(
+                    repository,
+                    path,
+                    text,
+                    match.start(),
+                    match.group("method"),
+                    match.group("url"),
+                    "angular-httpclient",
+                    base_url=base_url,
+                    endpoint_path=endpoint_path,
+                    extra_evidence=extra_evidence,
+                )
+            )
+        for call in any_call.finditer(text):
+            if call.start() not in recognized:
+                issues.append(
+                    DiscoveryIssue(
+                        code="angular_httpclient_dynamic_url_unresolved",
+                        message="Angular HttpClient call found with a URL expression that is not supported.",
+                        detector_id="angular-httpclient-consumer",
+                        evidence=(_evidence(repository, path, text, call.start(), "dynamic Angular HttpClient call"),),
+                    )
+                )
+    return endpoints, issues, scanned
+
+
 def _dio(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], list[DiscoveryIssue], int]:
     endpoints: list[EndpointFinding] = []
     issues: list[DiscoveryIssue] = []
@@ -315,13 +552,156 @@ def _dart_http(repository: Path, files: list[Path]) -> tuple[list[EndpointFindin
     return endpoints, issues, scanned
 
 
+def _php_concat_parts(expression: str) -> list[str]:
+    return [part.strip() for part in expression.split(".") if part.strip()]
+
+
+def _php_expression_to_url_parts(expression: str) -> tuple[str | None, str | None]:
+    expression = expression.strip().rstrip(",")
+    literal = _literal_value(expression)
+    if literal is not None:
+        return normalize_literal_url(literal)
+
+    parts = _php_concat_parts(expression)
+    if len(parts) < 2:
+        return None, None
+
+    base_expression: str | None = None
+    path = ""
+    for part in parts:
+        literal_part = _literal_value(part)
+        if literal_part is not None:
+            path += literal_part
+        elif base_expression is None:
+            base_expression = part.strip().removeprefix("$")
+        else:
+            path += _placeholder_for_expression(part)
+
+    if base_expression and path:
+        return base_expression, "/" + path.lstrip("/")
+    return None, None
+
+
+def _php_literal_method(expression: str) -> str | None:
+    literal = _literal_value(expression.strip().rstrip(","))
+    return literal.upper() if literal else None
+
+
+def _php_curl(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], list[DiscoveryIssue], int]:
+    endpoints: list[EndpointFinding] = []
+    issues: list[DiscoveryIssue] = []
+    scanned = 0
+    for path in files:
+        if path.suffix.lower() != ".php":
+            continue
+        text = read_source(path)
+        if text is None or "curl_" not in text:
+            continue
+        scanned += 1
+        handles: dict[str, dict[str, object]] = {}
+
+        for match in re.finditer(
+            r"(?P<handle>\$[A-Za-z_]\w*)\s*=\s*curl_init\s*\(\s*(?P<url>[^)]*)\)",
+            text,
+            re.DOTALL,
+        ):
+            handle = match.group("handle")
+            handles.setdefault(handle, {"offset": match.start()})
+            url_expr = match.group("url").strip()
+            if url_expr:
+                handles[handle]["url"] = url_expr
+                handles[handle]["url_offset"] = match.start()
+
+        for match in re.finditer(
+            r"curl_setopt\s*\(\s*(?P<handle>\$[A-Za-z_]\w*)\s*,\s*"
+            r"(?P<option>CURLOPT_[A-Z_]+)\s*,\s*(?P<value>.*?)\s*\)\s*;",
+            text,
+            re.DOTALL,
+        ):
+            handle = match.group("handle")
+            option = match.group("option")
+            value = match.group("value").strip()
+            state = handles.setdefault(handle, {"offset": match.start()})
+            if option == "CURLOPT_URL":
+                state["url"] = value
+                state["url_offset"] = match.start()
+            elif option == "CURLOPT_CUSTOMREQUEST":
+                method = _php_literal_method(value)
+                if method:
+                    state["method"] = method
+            elif option in {"CURLOPT_POST", "CURLOPT_POSTFIELDS"}:
+                state.setdefault("method", "POST")
+
+        for match in re.finditer(
+            r"curl_setopt_array\s*\(\s*(?P<handle>\$[A-Za-z_]\w*)\s*,\s*\[(?P<body>.*?)\]\s*\)",
+            text,
+            re.DOTALL,
+        ):
+            handle = match.group("handle")
+            body = match.group("body")
+            state = handles.setdefault(handle, {"offset": match.start()})
+            for item in re.finditer(r"(?P<option>CURLOPT_[A-Z_]+)\s*=>\s*(?P<value>[^,\n]+)", body):
+                option = item.group("option")
+                value = item.group("value").strip()
+                if option == "CURLOPT_URL":
+                    state["url"] = value
+                    state["url_offset"] = match.start() + item.start()
+                elif option == "CURLOPT_CUSTOMREQUEST":
+                    method = _php_literal_method(value)
+                    if method:
+                        state["method"] = method
+                elif option in {"CURLOPT_POST", "CURLOPT_POSTFIELDS"}:
+                    state.setdefault("method", "POST")
+
+        for handle, state in sorted(handles.items()):
+            url_expression = state.get("url")
+            offset = int(state.get("url_offset", state.get("offset", 0)))
+            if not isinstance(url_expression, str):
+                issues.append(
+                    DiscoveryIssue(
+                        code="php_curl_url_unresolved",
+                        message=f"cURL handle {handle} was found without a supported URL expression.",
+                        detector_id="php-curl-consumer",
+                        evidence=(_evidence(repository, path, text, offset, "unresolved cURL URL"),),
+                    )
+                )
+                continue
+            base_url, endpoint_path = _php_expression_to_url_parts(url_expression)
+            if endpoint_path is None:
+                issues.append(
+                    DiscoveryIssue(
+                        code="php_curl_url_unresolved",
+                        message="cURL URL expression could not be resolved conservatively.",
+                        detector_id="php-curl-consumer",
+                        evidence=(_evidence(repository, path, text, offset, "unresolved cURL URL"),),
+                    )
+                )
+                continue
+            endpoints.append(
+                _finding(
+                    repository,
+                    path,
+                    text,
+                    offset,
+                    str(state.get("method", "GET")),
+                    url_expression,
+                    "php-curl",
+                    base_url=base_url,
+                    endpoint_path=endpoint_path,
+                )
+            )
+    return endpoints, issues, scanned
+
+
 _HANDLERS = {
+    "angular-httpclient": _angular_httpclient,
     "axios": _axios,
     "fetch": _fetch,
     "guzzle": _guzzle,
     "laravel-http": _laravel_http,
     "dio": _dio,
     "dart-http": _dart_http,
+    "php-curl": _php_curl,
 }
 
 
