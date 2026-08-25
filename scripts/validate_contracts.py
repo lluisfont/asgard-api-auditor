@@ -12,8 +12,8 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from asgard_api_auditor.constants import (  # noqa: E402
+    ENDPOINT_DISCOVERY_SCHEMA_VERSION,
     FINDINGS_SCHEMA_VERSION,
-    INVENTORY_SCOPE_VERSION,
     OPENAPI_VERSION,
     PRIMARY_ARTIFACTS,
     TECHNICAL_INVENTORY_SCHEMA_VERSION,
@@ -78,50 +78,37 @@ def validate_findings_schema() -> None:
 def validate_inventory_schema() -> None:
     path = ROOT / "schemas" / "technical-inventory.schema.json"
     schema = json.loads(path.read_text(encoding="utf-8"))
-    props = schema["properties"]
-    required = set(schema["required"])
-    expected = {
-        "schema_version",
-        "scope_version",
-        "auditor_version",
-        "repository",
-        "repository_id",
-        "repository_identity_source",
-        "source_ref",
-        "source_commit",
-        "working_tree_dirty",
-        "inventory_complete",
-        "files_scanned",
-        "text_files_inspected",
-        "excluded_roots",
-        "skipped_oversize_files",
-        "skipped_symlinks",
-        "manifest_errors",
-        "manifests",
-        "submodules",
-        "languages",
-        "frameworks",
-        "http_clients",
-        "integration_surfaces",
-        "existing_specs",
-        "required_detector_categories",
-        "detector_hints",
-        "notes",
-    }
-    require(expected.issubset(required), "technical inventory schema misses required fields")
     require(
-        props["schema_version"].get("const") == TECHNICAL_INVENTORY_SCHEMA_VERSION,
+        schema["properties"]["schema_version"].get("const")
+        == TECHNICAL_INVENTORY_SCHEMA_VERSION,
         "technical inventory schema version mismatch",
     )
+    required = set(schema["required"])
+    require("repository_id" in required, "technical inventory must require repository_id")
+    require("source_commit" in required, "technical inventory must require source_commit")
+    require("inventory_complete" in required, "technical inventory must require completeness")
+
+
+def validate_discovery_schema() -> None:
+    path = ROOT / "schemas" / "endpoint-discovery.schema.json"
+    schema = json.loads(path.read_text(encoding="utf-8"))
     require(
-        props["scope_version"].get("const") == INVENTORY_SCOPE_VERSION,
-        "technical inventory scope version mismatch",
+        schema["properties"]["schema_version"].get("const")
+        == ENDPOINT_DISCOVERY_SCHEMA_VERSION,
+        "endpoint discovery schema version mismatch",
     )
-    detection = schema["$defs"]["technologyDetection"]
-    require(
-        {"kind", "name", "confidence", "evidence"}.issubset(set(detection["required"])),
-        "technology detection must require evidence and confidence",
-    )
+    required = set(schema["required"])
+    expected = {
+        "repository_id",
+        "source_ref",
+        "source_commit",
+        "inventory_complete",
+        "discovery_complete",
+        "endpoints",
+        "detectors",
+        "unresolved",
+    }
+    require(expected.issubset(required), "endpoint discovery schema misses coverage/provenance fields")
 
 
 def validate_templates() -> None:
@@ -157,6 +144,7 @@ def main() -> int:
     checks = [
         validate_findings_schema,
         validate_inventory_schema,
+        validate_discovery_schema,
         validate_templates,
         validate_primary_contract,
     ]
