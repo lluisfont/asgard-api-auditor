@@ -13,12 +13,15 @@ DETECTOR_ID = "slim-routes"
 DETECTOR_VERSION = "1.0.0"
 
 _METHODS = "get|post|put|patch|delete|options"
-_DIRECT = re.compile(
-    rf"\$[A-Za-z_]\w*->(?P<method>{_METHODS})\s*\(\s*"
-    r"(?P<quote>['\"])(?P<path>.*?)(?P=quote)",
-    re.IGNORECASE | re.DOTALL,
+_DIRECT_TEMPLATE = (
+    r"(?P<receiver>{receivers})->(?P<method>{methods})\s*\(\s*"
+    r"(?P<quote>['\"])(?P<path>.*?)(?P=quote)"
 )
-_ANY_ROUTE_CALL = re.compile(rf"\$[A-Za-z_]\w*->(?:{_METHODS})\s*\(", re.IGNORECASE)
+_ANY_TEMPLATE = r"(?P<receiver>{receivers})->(?:{methods})\s*\("
+_SLIM_ASSIGNMENT = re.compile(
+    r"(?P<receiver>\$[A-Za-z_]\w*)\s*=\s*(?:AppFactory::create|new\s+App|new\s+Router)\s*\(",
+    re.IGNORECASE,
+)
 
 
 def _evidence(repository: Path, path: Path, text: str, offset: int, note: str) -> Evidence:
@@ -28,6 +31,12 @@ def _evidence(repository: Path, path: Path, text: str, offset: int, note: str) -
         kind="route",
         note=note,
     )
+
+
+def _slim_receivers(text: str) -> set[str]:
+    receivers = {"$app"}
+    receivers.update(match.group("receiver") for match in _SLIM_ASSIGNMENT.finditer(text))
+    return receivers
 
 
 def detect_slim_routes(
@@ -52,8 +61,19 @@ def detect_slim_routes(
         if "->" not in text:
             continue
 
+        receivers = _slim_receivers(text)
+        receiver_pattern = "|".join(re.escape(receiver) for receiver in sorted(receivers))
+        direct = re.compile(
+            _DIRECT_TEMPLATE.format(receivers=receiver_pattern, methods=_METHODS),
+            re.IGNORECASE | re.DOTALL,
+        )
+        any_route_call = re.compile(
+            _ANY_TEMPLATE.format(receivers=receiver_pattern, methods=_METHODS),
+            re.IGNORECASE,
+        )
+
         recognized: set[int] = set()
-        for match in _DIRECT.finditer(text):
+        for match in direct.finditer(text):
             recognized.add(match.start())
             base_url, route_path = normalize_literal_url(match.group("path"))
             finding = EndpointFinding(
@@ -68,7 +88,7 @@ def detect_slim_routes(
             )
             endpoints[finding.identity()] = finding
 
-        for call in _ANY_ROUTE_CALL.finditer(text):
+        for call in any_route_call.finditer(text):
             if call.start() in recognized:
                 continue
             issues.append(

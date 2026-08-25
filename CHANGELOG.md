@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.2 - 2026-08-25
+
+### Fixed
+
+- Slim route discovery now only inspects verified Slim app/router receivers, avoiding false positives such as SFTP `->put(...)` calls.
+- Fetch discovery resolves same-class literal properties such as `fetch(this.API_URL, { method: 'POST' })` with multiline options.
+- PHP cURL discovery supports classic `curl_setopt_array($curl, array(...))` syntax.
+- cURL constant/expression bases remain traceable without inventing constant values.
+
+### Changed
+
+- Fetch coverage no longer emits the aggregate no-calls issue once a supported call has been proven.
+- Dynamic `curl_init($url)` remains fail-closed unless the URL can be proven deterministically.
+
 ## 0.4.1 - 2026-08-25
 
 ### Added
