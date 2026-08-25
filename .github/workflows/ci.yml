@@ -39,6 +39,9 @@ jobs:
       - name: Validate repository contracts
         run: python scripts/validate_contracts.py
 
+      - name: Generate runtime audit OpenAPI fixture
+        run: python scripts/generate_ci_audit_fixture.py /tmp/generated-audit-openapi.yaml
+
       - name: Set up Node
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
@@ -47,3 +50,6 @@ jobs:
 
       - name: Validate OpenAPI toolchain fixture
         run: npx -y @redocly/cli@2.47.0 lint examples/minimal-openapi.yaml
+
+      - name: Validate generated audit OpenAPI
+        run: npx -y @redocly/cli@2.47.0 lint /tmp/generated-audit-openapi.yaml

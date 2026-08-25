@@ -12,9 +12,9 @@ La pregunta operativa es:
 
 ## Estado
 
-**v0.4.5 — snapshots WSDL explícitos y reproducibles para completar contratos SOAP.**
+**v0.5.0 — generación trazable de OpenAPI, API Knowledge, findings y audit report a partir del discovery probado.**
 
-La v0.3 detecta tecnologías y superficies. La v0.4.x utiliza ese inventario para localizar endpoints HTTP expuestos y consumidos con evidencia concreta y falla de forma cerrada ante patrones dinámicos o todavía no soportados.
+La v0.3 detecta tecnologías y superficies. La v0.4.x localiza endpoints HTTP expuestos/consumidos y operaciones SOAP con cobertura fail-closed. La v0.5 empieza a convertir ese discovery en artefactos auditables y reutilizables.
 
 ## Inventario técnico
 
@@ -61,6 +61,35 @@ Si aparece un framework, cliente o patrón no soportado, `discovery_complete=fal
 
 Más detalle: [`docs/endpoint-discovery.md`](docs/endpoint-discovery.md).
 
+## Generación de auditoría v0.5
+
+```bash
+asgard-api-auditor audit /ruta/al/repositorio \
+  --repository-id asgard-warehouse \
+  --exclude-path audit \
+  --exclude-path work_sample \
+  --output api-audit-output
+```
+
+El comando genera y valida atómicamente:
+
+- `openapi.yaml`
+- `api-knowledge.md`
+- `findings.json`
+- `audit-report.md`
+
+Los mismos snapshots SOAP de `discover` pueden pasarse a `audit` con `--soap-wsdl`.
+
+### Semántica conservadora
+
+- OpenAPI contiene únicamente endpoints HTTP **expuestos** y demostrados por código.
+- Las llamadas HTTP consumidas permanecen en `findings.json` y `api-knowledge.md`; no se convierten en paths del proveedor.
+- SOAP permanece como superficie de integración separada y nunca se convierte artificialmente en REST.
+- Request bodies, responses, autenticación y autorización no se inventan si todavía no están reconstruidos.
+- v0.5.0 añade un blocker explícito `contract-enrichment-v0.5.0`; por tanto el `audit` permanece `partial` aunque `discovery_complete=true`.
+
+Más detalle: [`docs/audit-artifacts.md`](docs/audit-artifacts.md).
+
 ## Arquitectura
 
 ```text
@@ -80,16 +109,25 @@ discover (v0.4)
         +--> unresolved / unsupported
         |
         v
+audit artifacts (v0.5)
+        +--> openapi.yaml
+        +--> api-knowledge.md
+        +--> findings.json
+        +--> audit-report.md
+        |
+        v
 fases siguientes
-        +--> request/response enrichment
+        +--> request/response/security enrichment
         +--> provider/consumer correlation
-        +--> OpenAPI 3.1.2
-        +--> API Knowledge / RAG
+        +--> breaking-change gate
+        +--> API Knowledge / RAG central
 ```
 
 ## Cobertura
 
 `discovery_complete=true` solo puede producirse cuando el inventario terminó sin huecos conocidos, existe al menos un detector aplicable, todos los detectores ejecutados están soportados y no existen patrones o superficies pendientes.
+
+`audit status=complete` exige además que el contrato behavioral esté reconstruido y validado. En v0.5.0 el audit permanece intencionadamente `partial` porque esa fase de enriquecimiento todavía no está implementada.
 
 Encontrar cero endpoints nunca se interpreta automáticamente como ausencia de APIs.
 
