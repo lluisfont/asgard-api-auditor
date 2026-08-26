@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.4 - 2026-08-26
+
+### Changed
+
+- HTTP consumer discovery now masks comments before matching calls, preserving source offsets and line numbers.
+- Comment-only consumer calls are ignored for Angular HttpClient, Axios, Fetch, Dart Dio, Dart `http`, PHP cURL, Guzzle and Laravel Http facade detectors.
+
 ## 0.5.3 - 2026-08-26
 
 ### Added

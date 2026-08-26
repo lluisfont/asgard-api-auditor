@@ -180,6 +180,97 @@ class EndpointDiscoveryTests(unittest.TestCase):
             put = next(item for item in result.endpoints if item.method == "PUT")
             self.assertEqual(put.base_url, "http://localhost/atlantes-api/public")
 
+    def test_angular_commented_httpclient_calls_are_ignored_and_offsets_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "package.json": json.dumps(
+                    {"dependencies": {"@angular/core": "^17.0.0", "@angular/common": "^17.0.0"}}
+                ),
+                "src/api.service.ts": (
+                    "import { HttpClient } from '@angular/common/http';\n"
+                    "export class ApiService {\n"
+                    "  url = 'https://warehouse.example/api/';\n"
+                    "  note = \"text // not comment\";\n"
+                    "  constructor(private _http: HttpClient) {}\n"
+                    "  before() { return this._http.get(this.url + 'active-before'); }\n"
+                    "  /* block() { return this._http.get(this.url + 'commented-block'); } */\n"
+                    "  // line() { return this._http.get(this.url + 'commented-line'); }\n"
+                    "  after() { return this._http.get(this.url + 'active-after'); }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+            descriptions = {issue.code for issue in result.unresolved}
+            after = next(item for item in result.endpoints if item.path == "/active-after")
+
+            self.assertIn(("consumed", "GET", "/active-before"), found)
+            self.assertIn(("consumed", "GET", "/active-after"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-block"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-line"), found)
+            self.assertNotIn("angular_httpclient_dynamic_url_unresolved", descriptions)
+            self.assertEqual(after.evidence[0].line, 9)
+
+    def test_fetch_comment_masking_keeps_strings_and_template_urls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/api.ts": (
+                    "const note = 'text // not comment';\n"
+                    "/* fetch('/commented-block'); */\n"
+                    "// fetch('/commented-line');\n"
+                    "fetch('https://warehouse.example/api/items');\n"
+                    "fetch(`https://warehouse.example/api/items/${id}`);\n"
+                    "fetch('/active', { method: 'POST' });\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+            descriptions = {issue.code for issue in result.unresolved}
+
+            self.assertIn(("consumed", "GET", "/api/items"), found)
+            self.assertIn(("consumed", "GET", "/api/items/{id}"), found)
+            self.assertIn(("consumed", "POST", "/active"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-block"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-line"), found)
+            self.assertNotIn("fetch_dynamic_or_complex_call_unresolved", descriptions)
+
+    def test_vue_html_commented_fetch_call_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/App.vue": (
+                    "<template></template>\n"
+                    "<!-- fetch('/commented-html'); -->\n"
+                    "<script>\n"
+                    "fetch('/active-vue');\n"
+                    "</script>\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+
+            self.assertIn(("consumed", "GET", "/active-vue"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-html"), found)
+            self.assertNotIn("fetch_dynamic_or_complex_call_unresolved", {issue.code for issue in result.unresolved})
+
+    def test_axios_commented_calls_are_ignored_but_active_calls_remain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "package.json": json.dumps({"dependencies": {"axios": "^1.0.0"}}),
+                "src/api.ts": (
+                    "import axios from 'axios';\n"
+                    "/* axios.get('/commented-block'); */\n"
+                    "// axios.post('/commented-line');\n"
+                    "axios.get('/active');\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+
+            self.assertIn(("consumed", "GET", "/active"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-block"), found)
+            self.assertNotIn(("consumed", "POST", "/commented-line"), found)
+            self.assertNotIn("axios_dynamic_url_unresolved", {issue.code for issue in result.unresolved})
+
     def test_discovers_php_curl_literal_and_expression_urls(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp), {
@@ -226,6 +317,30 @@ class EndpointDiscoveryTests(unittest.TestCase):
             self.assertEqual(movimiento.base_url, "url_intercompany_delosi")
             self.assertEqual(buscar.base_url, "URL_ASGARD_API")
             self.assertTrue(result.discovery_complete)
+
+    def test_php_curl_commented_calls_are_ignored_but_active_calls_remain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "src/Auth.php": (
+                    "<?php\n"
+                    "/*\n"
+                    "$old = curl_init('https://warehouse.example/commented-block');\n"
+                    "curl_setopt($old, CURLOPT_POST, true);\n"
+                    "*/\n"
+                    "# $hash = curl_init('https://warehouse.example/commented-hash');\n"
+                    "// $line = curl_init('https://warehouse.example/commented-line');\n"
+                    "$sync = curl_init('https://warehouse.example/api/sync');\n"
+                    "curl_setopt($sync, CURLOPT_POST, true);\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+
+            self.assertIn(("consumed", "POST", "/api/sync"), found)
+            self.assertNotIn(("consumed", "POST", "/commented-block"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-hash"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-line"), found)
+            self.assertNotIn("php_curl_url_unresolved", {issue.code for issue in result.unresolved})
 
     def test_ambiguous_curl_init_variable_remains_unresolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -386,6 +501,47 @@ class EndpointDiscoveryTests(unittest.TestCase):
             self.assertIn(("consumed", "GET", "/api/items"), found)
             self.assertIn(("consumed", "POST", "/api/sync"), found)
 
+    def test_guzzle_commented_calls_are_ignored_but_active_calls_remain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "composer.json": json.dumps({"require": {"guzzlehttp/guzzle": "^7.0"}}),
+                "src/Client.php": (
+                    "<?php\n"
+                    "use GuzzleHttp\\Client;\n"
+                    "$client = new Client();\n"
+                    "/* $client->get('/commented-block'); */\n"
+                    "// $client->request('POST', '/commented-line');\n"
+                    "$client->get('/active');\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+
+            self.assertIn(("consumed", "GET", "/active"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-block"), found)
+            self.assertNotIn(("consumed", "POST", "/commented-line"), found)
+            self.assertNotIn("guzzle_dynamic_url_unresolved", {issue.code for issue in result.unresolved})
+
+    def test_laravel_http_commented_calls_are_ignored_but_active_calls_remain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "composer.json": json.dumps({"require": {"laravel/framework": "^11.0"}}),
+                "src/Client.php": (
+                    "<?php\n"
+                    "use Illuminate\\Support\\Facades\\Http;\n"
+                    "/* Http::get('/commented-block'); */\n"
+                    "// Http::post('/commented-line');\n"
+                    "Http::get('/active');\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+
+            self.assertIn(("consumed", "GET", "/active"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-block"), found)
+            self.assertNotIn(("consumed", "POST", "/commented-line"), found)
+            self.assertNotIn("laravel_http_complex_call_unresolved", {issue.code for issue in result.unresolved})
+
     def test_dio_literal_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp), {
@@ -395,6 +551,45 @@ class EndpointDiscoveryTests(unittest.TestCase):
             result = discover_endpoints(AuditTarget(repo))
             self.assertIn(("consumed", "GET", "/inventory/42"), _endpoint_set(result))
             self.assertTrue(result.discovery_complete)
+
+    def test_dio_commented_calls_are_ignored_but_active_calls_remain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "final dio = Dio();\n"
+                    "/* void old() { dio.get('/commented-block'); } */\n"
+                    "// void line() { dio.post('/commented-line'); }\n"
+                    "void load() { dio.get('/active'); }\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+
+            self.assertIn(("consumed", "GET", "/active"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-block"), found)
+            self.assertNotIn(("consumed", "POST", "/commented-line"), found)
+            self.assertNotIn("dio_dynamic_url_unresolved", {issue.code for issue in result.unresolved})
+
+    def test_dart_http_commented_calls_are_ignored_but_active_calls_remain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  http: ^1.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:http/http.dart' as http;\n"
+                    "/* void old() { http.get(Uri.parse('/commented-block')); } */\n"
+                    "// void line() { http.post(Uri.parse('/commented-line')); }\n"
+                    "void load() { http.get(Uri.parse('/active')); }\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            found = _endpoint_set(result)
+
+            self.assertIn(("consumed", "GET", "/active"), found)
+            self.assertNotIn(("consumed", "GET", "/commented-block"), found)
+            self.assertNotIn(("consumed", "POST", "/commented-line"), found)
+            self.assertNotIn("dart_http_complex_uri_unresolved", {issue.code for issue in result.unresolved})
 
     def test_unsupported_http_client_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

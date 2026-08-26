@@ -56,6 +56,72 @@ def read_source(path: Path) -> str | None:
         return None
 
 
+def mask_c_like_comments(
+    text: str,
+    *,
+    hash_comments: bool = False,
+    html_comments: bool = False,
+) -> str:
+    """Replace comments with spaces while preserving length and newlines."""
+    chars = list(text)
+    index = 0
+    quote: str | None = None
+    escaped = False
+    while index < len(chars):
+        char = chars[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            index += 1
+            continue
+        if char == "/" and index + 1 < len(chars) and chars[index + 1] == "/":
+            while index < len(chars) and chars[index] != "\n":
+                chars[index] = " "
+                index += 1
+            continue
+        if hash_comments and char == "#":
+            while index < len(chars) and chars[index] != "\n":
+                chars[index] = " "
+                index += 1
+            continue
+        if char == "/" and index + 1 < len(chars) and chars[index + 1] == "*":
+            chars[index] = " "
+            chars[index + 1] = " "
+            index += 2
+            while index + 1 < len(chars) and not (chars[index] == "*" and chars[index + 1] == "/"):
+                if chars[index] != "\n":
+                    chars[index] = " "
+                index += 1
+            if index + 1 < len(chars):
+                chars[index] = " "
+                chars[index + 1] = " "
+                index += 2
+            continue
+        if html_comments and text.startswith("<!--", index):
+            for _ in range(4):
+                chars[index] = " "
+                index += 1
+            while index + 2 < len(chars) and not text.startswith("-->", index):
+                if chars[index] != "\n":
+                    chars[index] = " "
+                index += 1
+            if index + 2 < len(chars):
+                for _ in range(3):
+                    chars[index] = " "
+                    index += 1
+            continue
+        index += 1
+    return "".join(chars)
+
+
 def relative_path(repository: Path, path: Path) -> str:
     return path.relative_to(repository).as_posix()
 

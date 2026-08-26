@@ -586,7 +586,7 @@ def _findings(
     unresolved.extend(_contract_unresolved_payload(item) for item in enrichment.unresolved)
     unresolved.append(
         {
-            "unresolved_id": "contract-enrichment-v0.5.3-coverage-gate",
+            "unresolved_id": "contract-enrichment-v0.5.4-coverage-gate",
             "category": "schema",
             "description": (
                 "Audit completion remains gated until deterministic contract enrichment coverage "
