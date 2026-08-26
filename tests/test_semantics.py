@@ -492,7 +492,7 @@ file_get_contents('https://consumer.example/local');
             env_dir = root / "venv"
             venv.EnvBuilder(with_pip=True).create(env_dir)
             python = env_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-            wheel = next(wheelhouse.glob("asgard_api_auditor-0.7.0-*.whl"))
+            wheel = next(wheelhouse.glob("asgard_api_auditor-*.whl"))
             subprocess.run([str(python), "-m", "pip", "install", str(wheel)], check=True, capture_output=True, text=True)
             runner = root / "runner"
             runner.mkdir()

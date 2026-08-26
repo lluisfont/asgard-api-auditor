@@ -552,6 +552,129 @@ class EndpointDiscoveryTests(unittest.TestCase):
             self.assertIn(("consumed", "GET", "/inventory/42"), _endpoint_set(result))
             self.assertTrue(result.discovery_complete)
 
+    def test_dio_inline_receiver_literal_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": "import 'package:dio/dio.dart';\nvoid load() { Dio().get('/x'); }\n",
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertIn(("consumed", "GET", "/x"), _endpoint_set(result))
+            self.assertTrue(result.discovery_complete)
+
+    def test_dio_late_typed_field_initialized_in_constructor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "class Api {\n"
+                    "  late Dio dio;\n"
+                    "  Api() { dio = Dio(); }\n"
+                    "  void load() { dio.get('/x'); }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertIn(("consumed", "GET", "/x"), _endpoint_set(result))
+            self.assertTrue(result.discovery_complete)
+
+    def test_dio_typed_dependency_field_member_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "class Api { late Dio dio; }\n"
+                    "class Remote {\n"
+                    "  final Api _api;\n"
+                    "  Remote(this._api);\n"
+                    "  void load() { _api.dio.get('/x'); }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertIn(("consumed", "GET", "/x"), _endpoint_set(result))
+            self.assertTrue(result.discovery_complete)
+
+    def test_dio_typed_dependency_field_member_chain_post(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "class Api { late Dio dio; }\n"
+                    "class Remote {\n"
+                    "  final Api _api;\n"
+                    "  Remote(this._api);\n"
+                    "  void save() { _api.dio.post('/x'); }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertIn(("consumed", "POST", "/x"), _endpoint_set(result))
+            self.assertTrue(result.discovery_complete)
+
+    def test_dio_interpolated_path_parameters_are_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "class Api { late Dio dio; }\n"
+                    "class Remote {\n"
+                    "  final Api _api;\n"
+                    "  Remote(this._api);\n"
+                    "  void finish(String journeyId) { _api.dio.put('/journey/finish/$journeyId'); }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertIn(("consumed", "PUT", "/journey/finish/{journeyId}"), _endpoint_set(result))
+            self.assertTrue(result.discovery_complete)
+
+    def test_dio_unproven_member_chain_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "class Remote {\n"
+                    "  final Object _api;\n"
+                    "  Remote(this._api);\n"
+                    "  void load() { _api.dio.get('/x'); }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            dio = next(item for item in result.detectors if item.detector_id == "dio-consumer")
+            self.assertEqual([], result.endpoints)
+            self.assertFalse(result.discovery_complete)
+            self.assertEqual(dio.status, "partial")
+            self.assertIn("dio_receiver_unresolved", {issue.code for issue in result.unresolved})
+            self.assertIn("dio_receiver_unresolved", set(dio.unsupported_patterns))
+
+    def test_dio_resolved_and_unresolved_candidates_keep_discovery_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "final dio = Dio();\n"
+                    "class Remote {\n"
+                    "  final Object _api;\n"
+                    "  Remote(this._api);\n"
+                    "  void load() { dio.get('/ok'); _api.dio.post('/unknown'); }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            dio = next(item for item in result.detectors if item.detector_id == "dio-consumer")
+            self.assertIn(("consumed", "GET", "/ok"), _endpoint_set(result))
+            self.assertFalse(result.discovery_complete)
+            self.assertEqual(dio.status, "partial")
+            self.assertIn("dio_receiver_unresolved", {issue.code for issue in result.unresolved})
+
     def test_dio_commented_calls_are_ignored_but_active_calls_remain(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp), {
