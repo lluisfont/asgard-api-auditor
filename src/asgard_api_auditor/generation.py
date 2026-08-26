@@ -15,6 +15,8 @@ from .artifacts import atomic_publish, sha256_file, validate_audit_set
 from .constants import FINDINGS_SCHEMA_VERSION, KNOWLEDGE_SCHEMA_VERSION, OPENAPI_VERSION
 from .discovery import discover_endpoints
 from .discovery_types import DiscoveryIssue, EndpointDiscovery, IntegrationFinding
+from .discovery_utils import iter_source_files
+from .enrichment import ContractEnrichmentResult, ContractUnresolved, enrich_slim_php_contracts
 from .inventory import inventory_repository
 from .models import AuditTarget, EndpointFinding, Evidence, TechnicalInventory
 from .redaction import redact_text
@@ -156,6 +158,16 @@ def _unresolved_payload(issue: DiscoveryIssue) -> dict[str, object]:
     }
 
 
+def _contract_unresolved_payload(issue: ContractUnresolved) -> dict[str, object]:
+    return {
+        "unresolved_id": _stable_id("unresolved", "contract-enrichment", issue.code, issue.message),
+        "category": "authentication" if "auth" in issue.code else "schema",
+        "description": f"{issue.code}: {issue.message}",
+        "impact": "blocking",
+        "evidence": [_safe_evidence(item) for item in issue.evidence],
+    }
+
+
 def _front_matter(audit_id: str, discovery: EndpointDiscovery) -> str:
     return "\n".join(
         [
@@ -179,7 +191,27 @@ def _evidence_label(endpoint: EndpointFinding) -> str:
     return ", ".join(parts)
 
 
-def _render_knowledge(audit_id: str, discovery: EndpointDiscovery) -> str:
+def _contract_status(endpoint: EndpointFinding) -> str:
+    for note in endpoint.notes:
+        if note.startswith("contract_enrichment_status="):
+            return note.split("=", 1)[1]
+    return "pending"
+
+
+def _render_fields(schema: dict[str, object] | None) -> str:
+    if not schema:
+        return "n/a"
+    properties = schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return "n/a"
+    return ", ".join(f"`{name}`" for name in sorted(properties))
+
+
+def _render_knowledge(
+    audit_id: str,
+    discovery: EndpointDiscovery,
+    enrichment: ContractEnrichmentResult,
+) -> str:
     exposed = [item for item in discovery.endpoints if item.direction == "exposed"]
     consumed = [item for item in discovery.endpoints if item.direction == "consumed"]
     lines = [
@@ -197,6 +229,7 @@ def _render_knowledge(audit_id: str, discovery: EndpointDiscovery) -> str:
         f"- HTTP consumed: **{len(consumed)}**",
         f"- Integration findings: **{len(discovery.integrations)}**",
         f"- Discovery complete: **{str(discovery.discovery_complete).lower()}**",
+        f"- Contract enrichment unresolved: **{enrichment.coverage.unresolved_contract_enrichment}**",
         "",
         "## Exposed HTTP",
         "",
@@ -211,7 +244,10 @@ def _render_knowledge(audit_id: str, discovery: EndpointDiscovery) -> str:
                 f"- Endpoint ID: `{item.endpoint_id}`",
                 f"- Confidence: `{item.confidence}`",
                 f"- Evidence: {_evidence_label(item) or 'n/a'}",
-                "- Contract enrichment: `pending`",
+                f"- Contract enrichment: `{_contract_status(item)}`",
+                f"- Request fields: {_render_fields(item.request.body_schema if item.request else None)}",
+                f"- Response fields: {_render_fields(item.response.schema if item.response else None)}",
+                f"- Authentication: `{item.authentication or 'unknown'}`",
                 "",
             ]
         )
@@ -252,19 +288,28 @@ def _render_knowledge(audit_id: str, discovery: EndpointDiscovery) -> str:
         lines.append("No discovery-level unresolved findings.")
     for issue in discovery.unresolved:
         lines.append(f"- **{issue.code}** — {issue.message}")
+    for issue in enrichment.unresolved:
+        lines.append(f"- **{issue.code}** — {issue.message}")
     lines.extend(
         [
             "",
-            "## v0.5 limitation",
+            "## Contract Enrichment Coverage",
             "",
-            "Request schemas, response schemas, authentication and authorization are not yet reconstructed. This artifact must not be treated as a complete behavioral API contract.",
+            f"- Total exposed endpoints: **{enrichment.coverage.total_exposed_endpoints}**",
+            f"- Request enrichment: **{enrichment.coverage.request_enriched}/{enrichment.coverage.request_enrichment_applicable}**",
+            f"- Response enrichment: **{enrichment.coverage.response_enriched}/{enrichment.coverage.response_enrichment_applicable}**",
+            f"- Security enrichment: **{enrichment.coverage.security_enriched}/{enrichment.coverage.security_enrichment_applicable}**",
             "",
         ]
     )
     return redact_text("\n".join(lines))
 
 
-def _render_report(audit_id: str, discovery: EndpointDiscovery) -> str:
+def _render_report(
+    audit_id: str,
+    discovery: EndpointDiscovery,
+    enrichment: ContractEnrichmentResult,
+) -> str:
     exposed = sum(1 for item in discovery.endpoints if item.direction == "exposed")
     consumed = sum(1 for item in discovery.endpoints if item.direction == "consumed")
     lines = [
@@ -274,7 +319,7 @@ def _render_report(audit_id: str, discovery: EndpointDiscovery) -> str:
         "",
         "## Verdict",
         "",
-        "**PARTIAL** — structural API discovery artifacts were generated and validated, but request/response/security contract enrichment is not implemented in v0.5.x.",
+        "**PARTIAL** — deterministic Slim/PHP contract enrichment is applied where source evidence supports it, but full behavioral audit completion remains gated.",
         "",
         "## Proven surface",
         "",
@@ -283,15 +328,27 @@ def _render_report(audit_id: str, discovery: EndpointDiscovery) -> str:
         f"- Integration findings: **{len(discovery.integrations)}**",
         f"- Discovery complete: **{str(discovery.discovery_complete).lower()}**",
         "",
+        "## Contract enrichment coverage",
+        "",
+        f"- Total exposed endpoints: **{enrichment.coverage.total_exposed_endpoints}**",
+        f"- Path parameters enriched: **{enrichment.coverage.path_parameters_enriched}/{enrichment.coverage.path_parameters_applicable}**",
+        f"- Request enrichment: **{enrichment.coverage.request_enriched}/{enrichment.coverage.request_enrichment_applicable}**",
+        f"- Response enrichment: **{enrichment.coverage.response_enriched}/{enrichment.coverage.response_enrichment_applicable}**",
+        f"- Security enrichment: **{enrichment.coverage.security_enriched}/{enrichment.coverage.security_enrichment_applicable}**",
+        f"- Unresolved contract enrichment: **{enrichment.coverage.unresolved_contract_enrichment}**",
+        "",
         "## Blocking work before full audit completion",
         "",
-        "- Reconstruct request parameters and bodies.",
-        "- Reconstruct response status codes, schemas and fields.",
-        "- Reconstruct authentication and authorization evidence.",
+        "- Complete and validate contract enrichment coverage gates.",
+        "- Resolve any remaining dynamic request/response/security patterns.",
+        "- Complete later provider/consumer correlation and breaking-change gates.",
     ]
     if discovery.unresolved:
         lines.append("- Resolve discovery-level blocking findings listed below.")
         lines.extend(f"  - `{item.code}`: {item.message}" for item in discovery.unresolved)
+    if enrichment.unresolved:
+        lines.append("- Resolve contract-enrichment blocking findings listed below.")
+        lines.extend(f"  - `{item.code}`: {item.message}" for item in enrichment.unresolved)
     lines.extend(
         [
             "",
@@ -327,6 +384,20 @@ def _canonical_path(path: str) -> str:
     return _PATH_PARAMETER.sub(replace, path)
 
 
+def _schema_json(schema: dict[str, object]) -> str:
+    return json.dumps(schema, sort_keys=True)
+
+
+def _request_path_parameters(endpoint: EndpointFinding) -> dict[str, dict[str, object]]:
+    if endpoint.request is None:
+        return {}
+    return {
+        parameter.name: parameter.schema or {"type": "string"}
+        for parameter in endpoint.request.parameters
+        if parameter.location == "path"
+    }
+
+
 def _group_openapi_paths(
     endpoints: list[EndpointFinding],
 ) -> list[tuple[str, list[str], list[EndpointFinding]]]:
@@ -355,18 +426,32 @@ def _group_openapi_paths(
 def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
     exposed = [item for item in discovery.endpoints if item.direction == "exposed"]
     groups = _group_openapi_paths(exposed)
+    has_bearer_auth = any(
+        (item.authentication or "").startswith("bearer JWT") for item in exposed
+    )
 
     lines = [
         f"openapi: {OPENAPI_VERSION}",
         "info:",
         f"  title: {json.dumps(discovery.repository_id + ' discovered API')}",
         f"  version: {json.dumps(discovery.source_commit[:12])}",
-        "  description: \"Structural OpenAPI generated from source evidence; request/response/security enrichment is pending.\"",
+        "  description: \"OpenAPI generated from source evidence; unknown request/response/security details are not inferred.\"",
         f'x-asgard-audit-id: "{audit_id}"',
         f'x-asgard-source-commit: "{discovery.source_commit}"',
         "x-asgard-contract-enrichment: partial",
-        "paths:",
     ]
+    if has_bearer_auth:
+        lines.extend(
+            [
+                "components:",
+                "  securitySchemes:",
+                "    bearerAuth:",
+                "      type: http",
+                "      scheme: bearer",
+                "      bearerFormat: JWT",
+            ]
+        )
+    lines.append("paths:")
     if not groups:
         lines[-1] = "paths: {}"
         return redact_text("\n".join(lines) + "\n")
@@ -405,27 +490,57 @@ def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
                 lines.extend(f"        - {json.dumps(value)}" for value in evidence)
             if canonical_parameters:
                 lines.append("      parameters:")
+                source_parameter_schemas = _request_path_parameters(endpoint)
                 for canonical_name, source_name in zip(canonical_parameters, source_parameters, strict=True):
+                    schema = source_parameter_schemas.get(source_name, {"type": "string"})
                     lines.extend(
                         [
                             f"        - name: {json.dumps(canonical_name)}",
                             "          in: path",
                             "          required: true",
-                            "          schema:",
-                            "            type: string",
+                            f"          schema: {_schema_json(schema)}",
                         ]
                     )
                     if canonical_name != source_name:
                         lines.append(
                             f"          x-asgard-source-parameter-name: {json.dumps(source_name)}"
                         )
+            if endpoint.request is not None and endpoint.request.body_schema is not None:
+                content_type = endpoint.request.content_type or "application/json"
+                lines.extend(
+                    [
+                        "      requestBody:",
+                        "        content:",
+                        f"          {json.dumps(content_type)}:",
+                        f"            schema: {_schema_json(endpoint.request.body_schema)}",
+                    ]
+                )
+            if (endpoint.authentication or "").startswith("bearer JWT"):
+                lines.extend(["      security:", "        - bearerAuth: []"])
+            response_description = (
+                "Response contract reconstructed from source evidence."
+                if endpoint.response is not None and endpoint.response.schema is not None
+                else "Response contract not yet reconstructed from source evidence."
+            )
             lines.extend(
                 [
                     "      responses:",
                     "        default:",
-                    "          description: \"Response contract not yet reconstructed from source evidence.\"",
+                    f"          description: {json.dumps(response_description)}",
                 ]
             )
+            if (
+                endpoint.response is not None
+                and endpoint.response.schema is not None
+                and endpoint.response.content_type is not None
+            ):
+                lines.extend(
+                    [
+                        "          content:",
+                        f"            {json.dumps(endpoint.response.content_type)}:",
+                        f"              schema: {_schema_json(endpoint.response.schema)}",
+                    ]
+                )
     return redact_text("\n".join(lines) + "\n")
 
 
@@ -433,16 +548,18 @@ def _findings(
     audit_id: str,
     inventory: TechnicalInventory,
     discovery: EndpointDiscovery,
+    enrichment: ContractEnrichmentResult,
     artifact_hashes: dict[str, str],
 ) -> dict[str, object]:
     unresolved = [_unresolved_payload(item) for item in discovery.unresolved]
+    unresolved.extend(_contract_unresolved_payload(item) for item in enrichment.unresolved)
     unresolved.append(
         {
-            "unresolved_id": "contract-enrichment-v0.5.0",
+            "unresolved_id": "contract-enrichment-v0.5.2-coverage-gate",
             "category": "schema",
             "description": (
-                "Request/response/authentication/authorization contract enrichment is pending; "
-                "v0.5.x OpenAPI is structural and cannot represent the full behavioral contract."
+                "Audit completion remains gated until deterministic contract enrichment coverage "
+                "and later provider/consumer correlation gates are explicitly complete."
             ),
             "impact": "blocking",
             "evidence": [],
@@ -472,9 +589,10 @@ def _findings(
             "files_excluded": 0,
             "exclusion_rules": list(inventory.excluded_roots),
             "unsupported_surfaces": unsupported_surfaces,
+            "contract_enrichment": enrichment.coverage.to_dict(),
             "notes": [
                 "Exact excluded-file count is not tracked in technical inventory v1.0.",
-                "Audit status remains partial until contract enrichment is implemented.",
+                "Audit status remains partial until all completion gates are explicitly satisfied.",
             ],
         },
         "endpoints": [_endpoint_payload(item) for item in discovery.endpoints],
@@ -503,6 +621,10 @@ def generate_audit(
     mappings = soap_wsdl or {}
     inventory = inventory_repository(target, allow_dirty=allow_dirty)
     discovery = discover_endpoints(target, allow_dirty=allow_dirty, soap_wsdl=mappings)
+    repository = target.repository.resolve()
+    files = iter_source_files(repository, target.exclude_paths)
+    enrichment = enrich_slim_php_contracts(repository, discovery.endpoints, files)
+    discovery.endpoints = enrichment.endpoints
     audit_id = _audit_id(target, discovery, mappings)
     destination = target.output.resolve()
 
@@ -514,15 +636,15 @@ def generate_audit(
         findings_path = staging / "findings.json"
 
         openapi_path.write_text(_render_openapi(audit_id, discovery), encoding="utf-8")
-        knowledge_path.write_text(_render_knowledge(audit_id, discovery), encoding="utf-8")
-        report_path.write_text(_render_report(audit_id, discovery), encoding="utf-8")
+        knowledge_path.write_text(_render_knowledge(audit_id, discovery, enrichment), encoding="utf-8")
+        report_path.write_text(_render_report(audit_id, discovery, enrichment), encoding="utf-8")
 
         hashes = {
             "openapi.yaml": sha256_file(openapi_path),
             "api-knowledge.md": sha256_file(knowledge_path),
             "audit-report.md": sha256_file(report_path),
         }
-        findings = _findings(audit_id, inventory, discovery, hashes)
+        findings = _findings(audit_id, inventory, discovery, enrichment, hashes)
         findings_text = redact_text(json.dumps(findings, indent=2, sort_keys=True) + "\n")
         findings_path.write_text(findings_text, encoding="utf-8")
 

@@ -12,7 +12,7 @@ La pregunta operativa es:
 
 ## Estado
 
-**v0.5.0 — generación trazable de OpenAPI, API Knowledge, findings y audit report a partir del discovery probado.**
+**v0.5.2 — generación trazable con enrichment Slim/PHP determinista y fail-closed.**
 
 La v0.3 detecta tecnologías y superficies. La v0.4.x localiza endpoints HTTP expuestos/consumidos y operaciones SOAP con cobertura fail-closed. La v0.5 empieza a convertir ese discovery en artefactos auditables y reutilizables.
 
@@ -85,8 +85,8 @@ Los mismos snapshots SOAP de `discover` pueden pasarse a `audit` con `--soap-wsd
 - OpenAPI contiene únicamente endpoints HTTP **expuestos** y demostrados por código.
 - Las llamadas HTTP consumidas permanecen en `findings.json` y `api-knowledge.md`; no se convierten en paths del proveedor.
 - SOAP permanece como superficie de integración separada y nunca se convierte artificialmente en REST.
-- Request bodies, responses, autenticación y autorización no se inventan si todavía no están reconstruidos.
-- v0.5.0 añade un blocker explícito `contract-enrichment-v0.5.0`; por tanto el `audit` permanece `partial` aunque `discovery_complete=true`.
+- Request bodies, responses, autenticación y autorización se añaden solo cuando pueden demostrarse desde código Slim/PHP.
+- v0.5.2 registra cobertura objetiva de enrichment y mantiene un blocker explícito `contract-enrichment-v0.5.2-coverage-gate`; por tanto el `audit` permanece `partial` aunque `discovery_complete=true`.
 
 Más detalle: [`docs/audit-artifacts.md`](docs/audit-artifacts.md).
 
@@ -117,7 +117,7 @@ audit artifacts (v0.5)
         |
         v
 fases siguientes
-        +--> request/response/security enrichment
+        +--> deeper request/response/security enrichment
         +--> provider/consumer correlation
         +--> breaking-change gate
         +--> API Knowledge / RAG central
@@ -127,7 +127,7 @@ fases siguientes
 
 `discovery_complete=true` solo puede producirse cuando el inventario terminó sin huecos conocidos, existe al menos un detector aplicable, todos los detectores ejecutados están soportados y no existen patrones o superficies pendientes.
 
-`audit status=complete` exige además que el contrato behavioral esté reconstruido y validado. En v0.5.0 el audit permanece intencionadamente `partial` porque esa fase de enriquecimiento todavía no está implementada.
+`audit status=complete` exige además que el contrato behavioral esté reconstruido y validado. En v0.5.2 el audit permanece intencionadamente `partial`: existe enrichment Slim/PHP parcial y trazable, pero los gates globales todavía no están completos.
 
 Encontrar cero endpoints nunca se interpreta automáticamente como ausencia de APIs.
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.2 - 2026-08-26
+
+### Added
+
+- Deterministic Slim/PHP contract enrichment for exposed endpoints during audit artifact generation.
+- Path parameters now carry source evidence and survive v0.5.1 OpenAPI canonical path mapping.
+- Supported Slim/PHP patterns enrich JSON request body fields, optional `??` defaults, JSON response fields, `Content-Type: application/json`, route middleware and JWT bearer authorization evidence.
+- Findings coverage now includes objective contract-enrichment counters and unresolved contract-enrichment findings.
+
+### Changed
+
+- OpenAPI generation uses only demonstrated request/response/security enrichment and still avoids consumed HTTP and SOAP provider paths.
+- Audit status remains `partial` behind an explicit v0.5.2 coverage gate instead of claiming behavioral completion.
+
 ## 0.5.1 - 2026-08-26
 
 ### Fixed
