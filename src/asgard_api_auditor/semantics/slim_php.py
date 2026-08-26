@@ -73,6 +73,7 @@ _INSERT = re.compile(r"\bINSERT\s+INTO\s+([`\"']?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Z
 _UPDATE = re.compile(r"\bUPDATE\s+([`\"']?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?[`\"']?)", re.IGNORECASE)
 _DELETE = re.compile(r"\bDELETE\s+FROM\s+([`\"']?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?[`\"']?)", re.IGNORECASE)
 _CALL = re.compile(r"\bCALL\s+([`\"']?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?[`\"']?)", re.IGNORECASE)
+_DYNAMIC_SQL_PART = "__ASGARD_DYNAMIC_SQL_PART__"
 _DYNAMIC_FUNCTION_CALL = re.compile(r"(?<!->)(?<!::)(?P<var>\$[A-Za-z_]\w*)\s*\(", re.IGNORECASE)
 _CALL_USER_FUNC = re.compile(r"\bcall_user_func(?:_array)?\s*\(", re.IGNORECASE)
 _DYNAMIC_METHOD_CALL = re.compile(r"->\s*(?P<method>\$[A-Za-z_]\w*)\s*\(", re.IGNORECASE)
@@ -200,6 +201,10 @@ def _unresolved(builder: _Builder, code: str, message: str, evidence: Evidence) 
     builder.unresolved.append(SemanticUnresolved(code, message, (evidence,)))
 
 
+def _contains_php_variable(expr: str, variable: str) -> bool:
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(variable)}(?![A-Za-z0-9_])", expr) is not None
+
+
 def _literal(expr: str, field_vars: dict[str, str]) -> tuple[str, list[str], bool]:
     parts: list[str] = []
     cursor = 0
@@ -211,8 +216,25 @@ def _literal(expr: str, field_vars: dict[str, str]) -> tuple[str, list[str], boo
         cursor = match.end()
     if expr[cursor:].strip(" \t\r\n."):
         dynamic = True
-    fields = sorted({field for variable, field in field_vars.items() if re.search(rf"\b{re.escape(variable)}\b", expr)})
+    fields = sorted({field for variable, field in field_vars.items() if _contains_php_variable(expr, variable)})
     return " ".join(parts), fields, dynamic
+
+
+def _sql_literal(expr: str, field_vars: dict[str, str]) -> tuple[str, list[str], bool]:
+    parts: list[str] = []
+    cursor = 0
+    dynamic = False
+    for match in _STRING.finditer(expr):
+        if expr[cursor : match.start()].strip(" \t\r\n."):
+            parts.append(_DYNAMIC_SQL_PART)
+            dynamic = True
+        parts.append(match.group("value"))
+        cursor = match.end()
+    if expr[cursor:].strip(" \t\r\n."):
+        parts.append(_DYNAMIC_SQL_PART)
+        dynamic = True
+    fields = sorted({field for variable, field in field_vars.items() if _contains_php_variable(expr, variable)})
+    return "".join(parts), fields, dynamic
 
 
 def _field_vars(body: str) -> dict[str, str]:
@@ -279,7 +301,7 @@ def _sql_vars(body: str) -> dict[str, tuple[str, list[str], bool]]:
                 re.DOTALL,
             )
             if reassigned_append is not None:
-                literal, fields, dynamic = _literal(reassigned_append.group("tail"), field_vars)
+                literal, fields, dynamic = _sql_literal(reassigned_append.group("tail"), field_vars)
                 if literal:
                     previous_sql, previous_fields, previous_dynamic = values.get(match.group("var"), ("", [], False))
                     values[match.group("var")] = (
@@ -288,7 +310,7 @@ def _sql_vars(body: str) -> dict[str, tuple[str, list[str], bool]]:
                         previous_dynamic or dynamic,
                     )
                 continue
-            literal, fields, dynamic = _literal(match.group("expr"), field_vars)
+            literal, fields, dynamic = _sql_literal(match.group("expr"), field_vars)
             if literal:
                 values[match.group("var")] = (literal, fields, dynamic)
             continue
@@ -297,7 +319,7 @@ def _sql_vars(body: str) -> dict[str, tuple[str, list[str], bool]]:
             continue
         if match.group("var") not in values and _SQL_FRAGMENT_KEYWORD.search(statement) is None:
             continue
-        literal, fields, dynamic = _literal(match.group("expr"), field_vars)
+        literal, fields, dynamic = _sql_literal(match.group("expr"), field_vars)
         if literal:
             previous_sql, previous_fields, previous_dynamic = values.get(match.group("var"), ("", [], False))
             values[match.group("var")] = (
@@ -313,7 +335,7 @@ def _clean(raw: str) -> str:
 
 
 def _complete_resource(raw: str) -> bool:
-    return bool(raw) and not raw.endswith(("_", "."))
+    return bool(raw) and _DYNAMIC_SQL_PART not in raw and not raw.endswith(("_", "."))
 
 
 def _sql_targets(statement: str) -> list[tuple[str, str]]:
@@ -351,7 +373,7 @@ def _record_sql(builder: _Builder, ctx: _Context) -> None:
         if expr in sql_vars:
             sql, source_fields, dynamic = sql_vars[expr]
         else:
-            sql, source_fields, dynamic = _literal(expr, field_vars)
+            sql, source_fields, dynamic = _sql_literal(expr, field_vars)
         if not sql:
             _unresolved(builder, "slim_php_semantic_dynamic_sql", "SQL expression is dynamic and no literal statement text could be reconstructed.", evidence)
             continue
@@ -443,6 +465,70 @@ def _record_jwt(builder: _Builder, ctx: _Context) -> None:
             builder.produced_claims[claim] = {"claim": claim, "evidence": [_safe_evidence(evidence)]}
 
 
+def _skip_ws(body: str, offset: int) -> int:
+    while offset < len(body) and body[offset].isspace():
+        offset += 1
+    return offset
+
+
+def _parse_else_block(body: str, offset: int) -> tuple[str, int] | None:
+    offset = _skip_ws(body, offset)
+    if not body.startswith("else", offset):
+        return None
+    after_else = offset + len("else")
+    if after_else < len(body) and (body[after_else].isalnum() or body[after_else] == "_"):
+        return None
+    branch_start = _skip_ws(body, after_else)
+    if body.startswith("if", branch_start):
+        return None
+    if branch_start >= len(body) or body[branch_start] != "{":
+        return None
+    branch_end = _matching_delimiter(body, branch_start, "{", "}")
+    if branch_end is None:
+        return None
+    return body[branch_start + 1 : branch_end], offset
+
+
+def _condition_span_end(body: str, if_start: int) -> int | None:
+    open_at = body.find("(", if_start)
+    close_at = _matching_delimiter(body, open_at, "(", ")")
+    if close_at is None:
+        return None
+    brace = body.find("{", close_at)
+    if brace == -1:
+        return None
+    end = _matching_delimiter(body, brace, "{", "}")
+    if end is None:
+        return None
+    parsed_else = _parse_else_block(body, end + 1)
+    if parsed_else is None:
+        return end + 1
+    else_offset = parsed_else[1]
+    else_brace = body.find("{", else_offset)
+    else_end = _matching_delimiter(body, else_brace, "{", "}")
+    return None if else_end is None else else_end + 1
+
+
+def _mask_nested_condition_structures(block: str) -> str:
+    chars = list(block)
+    masked_until = 0
+    for match in _IF_START.finditer(block):
+        if match.start() < masked_until:
+            continue
+        end = _condition_span_end(block, match.start())
+        if end is None:
+            continue
+        for index in range(match.start(), end):
+            if chars[index] != "\n":
+                chars[index] = " "
+        masked_until = end
+    return "".join(chars)
+
+
+def _has_nested_condition(block: str) -> bool:
+    return _IF_START.search(_mask_strings(block)) is not None
+
+
 def _conditions(body: str) -> list[tuple[str, str, int]]:
     result: list[tuple[str, str, int]] = []
     for match in _IF_START.finditer(body):
@@ -454,6 +540,10 @@ def _conditions(body: str) -> list[tuple[str, str, int]]:
         end = _matching_delimiter(body, brace, "{", "}") if brace != -1 else None
         if end is not None:
             result.append((body[open_at + 1 : close_at].strip(), body[brace + 1 : end], match.start()))
+            parsed_else = _parse_else_block(body, end + 1)
+            if parsed_else is not None:
+                else_block, else_offset = parsed_else
+                result.append((f"else !({body[open_at + 1 : close_at].strip()})", else_block, else_offset))
     return result
 
 
@@ -466,15 +556,25 @@ def _response_field_bindings(body: str) -> dict[str, set[str]]:
 
 def _record_conditions(builder: _Builder, ctx: _Context) -> None:
     response_bindings = _response_field_bindings(ctx.body)
+    response_fields = set(builder.endpoint.response.fields if builder.endpoint.response else [])
     for condition, block, offset in _conditions(ctx.body):
+        if _has_nested_condition(block):
+            _unresolved(
+                builder,
+                "slim_php_semantic_nested_condition_branch",
+                "Condition branch contains nested control flow; only direct assignments were attributed to this condition.",
+                _ev(builder.repository, ctx, offset, "nested condition branch"),
+            )
+        direct_block = _mask_nested_condition_structures(block)
         fields = [
             {"field": match.group("field"), "expression": match.group("expr").strip()}
-            for match in _BODY_FIELD.finditer(block)
+            for match in _BODY_FIELD.finditer(direct_block)
+            if match.group("field") in response_fields
         ]
-        for match in _VARIABLE_ASSIGNMENT.finditer(block):
+        for match in _VARIABLE_ASSIGNMENT.finditer(direct_block):
             variable = match.group("var")
             for response_field in response_bindings.get(variable, set()):
-                if response_field not in {"codigo", "estado", "mensaje"}:
+                if response_field not in response_fields:
                     continue
                 fields.append(
                     {

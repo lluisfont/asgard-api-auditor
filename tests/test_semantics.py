@@ -241,6 +241,149 @@ $app->get('/dynamic-table', function($request, $response, $args) use ($conexion)
             )
             self.assertEqual(behavior["semantic_status"], "unresolved")
 
+    def test_dynamic_sql_identifier_boundary_fails_closed_but_dynamic_values_trace_fields(self) -> None:
+        routes = """<?php
+$app->post('/sql-boundary', function($request, $response, $args) use ($conexion) {
+    $body = $request->getParsedBody();
+    $idcliente = $body['idcliente'] ?? null;
+    $username = $body['username'] ?? null;
+    $suffix = $body['suffix'] ?? null;
+    $conexion->query("SELECT * FROM t_cliente" . $suffix);
+    $conexion->query("SELECT * FROM t_cliente WHERE idcliente=" . $idcliente);
+    $conexion->query("SELECT * FROM t_usuario WHERE t_usuario.username='" . $username . "'");
+    $conexion->exec("INSERT INTO t_cliente" . $suffix . " (idcliente) VALUES (1)");
+    $conexion->exec("UPDATE t_cliente" . $suffix . " SET activo=1");
+    $conexion->exec("DELETE FROM t_cliente" . $suffix . " WHERE idcliente=1");
+    $conexion->exec("CALL sp_cliente" . $suffix . "()");
+    return $response;
+});
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            behavior = _endpoint(_audit(_repo(root, routes), root / "out"), "POST", "/sql-boundary")["behavior"]
+            facts = {(item["operation"], item["resource"]) for item in behavior["data_access"]}
+            self.assertIn(("SELECT", "t_cliente"), facts)
+            self.assertIn(("SELECT", "t_usuario"), facts)
+            self.assertNotIn(("INSERT", "t_cliente"), facts)
+            self.assertNotIn(("UPDATE", "t_cliente"), facts)
+            self.assertNotIn(("DELETE", "t_cliente"), facts)
+            self.assertNotIn(("CALL", "sp_cliente"), facts)
+            cliente_facts = [
+                item
+                for item in behavior["data_access"]
+                if item["operation"] == "SELECT" and item["resource"] == "t_cliente"
+            ]
+            usuario_facts = [
+                item
+                for item in behavior["data_access"]
+                if item["operation"] == "SELECT" and item["resource"] == "t_usuario"
+            ]
+            self.assertIn("idcliente", set().union(*(item["source_fields"] for item in cliente_facts)))
+            self.assertIn("username", set().union(*(item["source_fields"] for item in usuario_facts)))
+            self.assertIn(
+                "slim_php_semantic_sql_target_unresolved",
+                {item["code"] for item in behavior["unresolved"]},
+            )
+            self.assertIn(
+                "slim_php_semantic_sql_dynamic_expression",
+                {item["code"] for item in behavior["unresolved"]},
+            )
+
+    def test_real_shape_login_nested_conditions_and_else_outcomes_are_direct_only(self) -> None:
+        routes = """<?php
+$app->post('/login', function($request, $response, $args) use ($conexion) {
+    $body = $request->getParsedBody();
+    $username = $body['username'] ?? null;
+    $contrasena = $body['contrasena'] ?? null;
+    $codigo=0;
+    $status='Error';
+    $token='';
+    $usuario='';
+    $cambiocontrasena=false;
+    $result = $conexion->query("SELECT idcontrasenamaestra FROM t_contrasenamaestra WHERE contrasena=md5('$contrasena')");
+    if(($row = $result->fetch(PDO::FETCH_ASSOC))){
+        $pass_master=true;
+    }
+    $result = $conexion->query("SELECT t_usuario.idusuario, t_usuario.contrasena, md5('".$contrasena."') as contrasenaint, IFNULL(t_usuario.activo,0) as activo, t_usuario.fecha_contrasena FROM t_usuario WHERE t_usuario.username='$username';");
+    if(($row = $result->fetch(PDO::FETCH_ASSOC))){
+        if($row["contrasena"] != $row["contrasenaint"] && !$pass_master){
+            $codigo=400;
+            $mensaje='Contraseña Incorrecta';
+        }else{
+            if((int)$row["activo"]==1 || $pass_master){
+                $diasContrasena = DateTimeService::daysSinceLocalDate($row['fecha_contrasena'], $timezoneName);
+                if($diasContrasena>90 && !$pass_master){
+                    $cambiocontrasena=true;
+                }
+                $payload = array(
+                    "idusuario" => $row["idusuario"],
+                    'cambiocontrasena'=>$cambiocontrasena
+                );
+                $token = JWT::encode($payload, $key, 'HS256');
+                if($token<>''){
+                    $status="Exito";
+                    $codigo=200;
+                    $mensaje="Ingreso Existoso";
+                    $usuario=$row['nombre'];
+                }else{
+                    $codigo=500;
+                    $mensaje="Ocurrio un problema, vuelva a intentarlo mas tarde";
+                }
+            }else{
+                $codigo=400;
+                $mensaje='Usuario inactivo';
+            }
+        }
+    }else{
+        $codigo=400;
+        $mensaje='Usuario Inexistente';
+    }
+    $resultado=array(
+        'estado'=>$status,
+        'codigo'=>$codigo,
+        'mensaje'=>$mensaje,
+        'usuario'=>$usuario,
+        'token'=>$token,
+        'cambiocontrasena'=>$cambiocontrasena
+    );
+    $response->getBody()->write(json_encode($resultado));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            behavior = _endpoint(_audit(_repo(root, routes), root / "out"), "POST", "/login")["behavior"]
+            self.assertEqual({item["name"] for item in behavior["request_fields"]}, {"username", "contrasena"})
+            self.assertIn("cambiocontrasena", behavior["response_semantics"]["body_fields"])
+            by_condition = {
+                condition["condition"]: {
+                    (field["field"], field.get("expression"))
+                    for field in condition["body_fields"]
+                }
+                for condition in behavior["conditions"]
+            }
+            self.assertIn(
+                ("mensaje", "'Contraseña Incorrecta'"),
+                by_condition['$row["contrasena"] != $row["contrasenaint"] && !$pass_master'],
+            )
+            self.assertIn(("codigo", "400"), by_condition['$row["contrasena"] != $row["contrasenaint"] && !$pass_master'])
+            self.assertIn(("mensaje", "'Usuario inactivo'"), by_condition['else !((int)$row["activo"]==1 || $pass_master)'])
+            self.assertIn(("mensaje", "'Usuario Inexistente'"), by_condition['else !(($row = $result->fetch(PDO::FETCH_ASSOC)))'])
+            self.assertIn(("cambiocontrasena", "true"), by_condition["$diasContrasena>90 && !$pass_master"])
+            self.assertIn(("codigo", "200"), by_condition["$token<>''"])
+            self.assertIn(("estado", '"Exito"'), by_condition["$token<>''"])
+            self.assertIn(("mensaje", '"Ingreso Existoso"'), by_condition["$token<>''"])
+            self.assertIn(("codigo", "500"), by_condition["else !($token<>'')"])
+            self.assertIn(("mensaje", '"Ocurrio un problema, vuelva a intentarlo mas tarde"'), by_condition["else !($token<>'')"])
+            active_outcomes = by_condition.get('(int)$row["activo"]==1 || $pass_master', set())
+            self.assertNotIn(("codigo", "200"), active_outcomes)
+            self.assertNotIn(("mensaje", '"Ingreso Existoso"'), active_outcomes)
+            self.assertNotIn(("permisos", "[]"), active_outcomes)
+            self.assertIn(
+                "slim_php_semantic_nested_condition_branch",
+                {item["code"] for item in behavior["unresolved"]},
+            )
+
     def test_dynamic_callback_forces_partial(self) -> None:
         routes = """<?php
 $app->post('/callback', function($request, $response, $args) use ($conexion) {
