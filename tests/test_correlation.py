@@ -10,6 +10,7 @@ from asgard_api_auditor.correlation import (
     CorrelationError,
     build_correlation_payload,
     correlate_findings,
+    validate_correlation_set,
 )
 
 
@@ -47,6 +48,21 @@ def _endpoint(
     return payload
 
 
+def _coverage() -> dict[str, object]:
+    return {
+        "inventory_complete": True,
+        "languages": [],
+        "frameworks": [],
+        "http_clients": [],
+        "required_detector_categories": [],
+        "detectors": [],
+        "files_scanned": 0,
+        "files_excluded": 0,
+        "exclusion_rules": [],
+        "unsupported_surfaces": [],
+    }
+
+
 def _write_findings(
     root: Path,
     name: str,
@@ -60,7 +76,7 @@ def _write_findings(
 ) -> Path:
     payload = {
         "schema_version": schema_version,
-        "audit_id": audit_id or f"audit-{repository_id}",
+        "audit_id": audit_id or f"audit-{repository_id}-fixture",
         "auditor_version": "0.6.0",
         "repository": repository_id,
         "repository_id": repository_id,
@@ -68,7 +84,7 @@ def _write_findings(
         "source_commit": source_commit,
         "audit_timestamp": "2026-08-26T00:00:00+00:00",
         "status": "partial",
-        "coverage": {},
+        "coverage": _coverage(),
         "endpoints": endpoints,
         "integration_surfaces": integrations or [],
         "unresolved": [],
@@ -211,8 +227,8 @@ class CorrelationTests(unittest.TestCase):
             provider = _write_findings(root, "warehouse.json", repository_id="asgard-warehouse", source_commit="a" * 40, endpoints=[_endpoint("exposed", "POST", "/inventario/login")])
             mobile = _write_findings(root, "mobile.json", repository_id="asgard-mobile-embarques", source_commit="b" * 40, endpoints=[_endpoint("consumed", "POST", "{apiUrl}/inventario/login")])
             record = self._correlate(provider, mobile)["correlations"][0]
-            self.assertEqual(record["status"], "matched_unique_candidate")
-            self.assertEqual(record["normalized_path_shape"], "/inventario/login")
+            self.assertEqual(record["status"], "unmatched")
+            self.assertEqual(record["normalized_path_shape"], "{}/inventario/login")
             self.assertEqual(record["consumer_path"], "{apiUrl}/inventario/login")
 
     def test_duplicate_identical_input_is_deduplicated(self) -> None:
@@ -233,6 +249,23 @@ class CorrelationTests(unittest.TestCase):
     def test_unsupported_findings_schema_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             findings = _write_findings(Path(tmp), "repo.json", repository_id="repo", source_commit="a" * 40, endpoints=[], schema_version="9.0")
+            with self.assertRaises(CorrelationError):
+                self._correlate(findings)
+
+    def test_invalid_findings_schema_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            findings = _write_findings(
+                root,
+                "repo.json",
+                repository_id="repo",
+                source_commit="a" * 40,
+                endpoints=[_endpoint("consumed", "GET", "/health")],
+            )
+            payload = json.loads(findings.read_text(encoding="utf-8"))
+            payload["coverage"] = {}
+            findings.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
             with self.assertRaises(CorrelationError):
                 self._correlate(findings)
 
@@ -309,7 +342,7 @@ class CorrelationTests(unittest.TestCase):
                         "status": "confirmed",
                         "direction": "consumed",
                         "confidence": "confirmed",
-                        "evidence": [{"path": "soap.php", "kind": "integration"}],
+                        "evidence": [{"path": "soap.php", "kind": "unknown"}],
                     }
                 ],
             )
@@ -340,6 +373,20 @@ class CorrelationTests(unittest.TestCase):
             self.assertIn("access_token=[REDACTED]", text)
             self.assertIn('"line": 7', text)
             self.assertNotIn("topsecret", text)
+
+    def test_invalid_correlations_schema_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            findings = _write_findings(root, "repo.json", repository_id="repo", source_commit="a" * 40, endpoints=[_endpoint("consumed", "GET", "/x")])
+            output = root / "correlation-output"
+            correlate_findings([findings], output)
+            correlations_path = output / "correlations.json"
+            payload = json.loads(correlations_path.read_text(encoding="utf-8"))
+            payload["coverage"].pop("status_total")
+            correlations_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+            with self.assertRaises(CorrelationError):
+                validate_correlation_set(output)
 
     def test_atomic_artifact_publication_preserves_previous_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

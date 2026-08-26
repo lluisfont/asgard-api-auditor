@@ -32,6 +32,21 @@ def _init_repo(root: Path, *, with_supported_api: bool = False) -> Path:
     return repo
 
 
+def _findings_coverage() -> dict[str, object]:
+    return {
+        "inventory_complete": True,
+        "languages": [],
+        "frameworks": [],
+        "http_clients": [],
+        "required_detector_categories": [],
+        "detectors": [],
+        "files_scanned": 0,
+        "files_excluded": 0,
+        "exclusion_rules": [],
+        "unsupported_surfaces": [],
+    }
+
+
 class CliTests(unittest.TestCase):
     def test_inventory_writes_json_to_stdout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,7 +155,7 @@ class CliTests(unittest.TestCase):
                         "source_commit": "a" * 40,
                         "audit_timestamp": "2026-08-26T00:00:00+00:00",
                         "status": "partial",
-                        "coverage": {},
+                        "coverage": _findings_coverage(),
                         "endpoints": [
                             {
                                 "endpoint_id": "consumed-get-health",

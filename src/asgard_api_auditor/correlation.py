@@ -18,6 +18,7 @@ from .artifacts import sha256_file
 from .constants import CORRELATIONS_SCHEMA_VERSION, FINDINGS_SCHEMA_VERSION
 from .path_normalization import normalized_path_shape
 from .redaction import contains_unredacted_secret_like_value, redact_text
+from .schema_validation import SchemaValidationError, load_json_schema, validate_json_schema
 
 CorrelationStatus = Literal[
     "matched_confirmed",
@@ -29,6 +30,9 @@ CorrelationStatus = Literal[
 
 class CorrelationError(ValueError):
     """Raised when correlation inputs or outputs fail closed."""
+
+
+SCHEMAS_DIR = Path(__file__).resolve().parents[2] / "schemas"
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,16 @@ def _validate_endpoint(endpoint: object, *, index: int, source: Path) -> dict[st
     return endpoint
 
 
+def _schema(name: str) -> dict[str, object]:
+    path = SCHEMAS_DIR / name
+    if not path.is_file():
+        path = Path.cwd() / "schemas" / name
+    try:
+        return load_json_schema(path)
+    except SchemaValidationError as exc:
+        raise CorrelationError(str(exc)) from exc
+
+
 def _load_findings(path: Path) -> FindingsSnapshot:
     resolved = path.resolve()
     try:
@@ -92,6 +106,10 @@ def _load_findings(path: Path) -> FindingsSnapshot:
         raise CorrelationError(f"Unable to read findings artifact {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise CorrelationError(f"{path}: findings artifact must be a JSON object")
+    try:
+        validate_json_schema(payload, _schema("findings.schema.json"), source=str(path))
+    except SchemaValidationError as exc:
+        raise CorrelationError(str(exc)) from exc
     required = {
         "schema_version",
         "audit_id",
@@ -195,8 +213,6 @@ def _correlation_path(path: str) -> str:
     parsed = urlsplit(path)
     if parsed.scheme in {"http", "https"} and parsed.path:
         return parsed.path
-    if path.startswith("{") and "}/" in path:
-        return path.split("}", 1)[1]
     return path
 
 
@@ -640,6 +656,12 @@ def validate_correlation_set(directory: Path) -> dict[str, str]:
     if missing:
         raise CorrelationError(f"Missing correlation artifacts: {', '.join(missing)}")
     payload = json.loads(correlations_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise CorrelationError("correlations.json must be a JSON object")
+    try:
+        validate_json_schema(payload, _schema("correlations.schema.json"), source="correlations.json")
+    except SchemaValidationError as exc:
+        raise CorrelationError(str(exc)) from exc
     if payload.get("schema_version") != CORRELATIONS_SCHEMA_VERSION:
         raise CorrelationError("correlations.json schema_version mismatch")
     coverage = payload.get("coverage")
