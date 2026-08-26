@@ -269,6 +269,40 @@ class CorrelationTests(unittest.TestCase):
             with self.assertRaises(CorrelationError):
                 self._correlate(findings)
 
+    def test_invalid_endpoint_enum_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            findings = _write_findings(
+                root,
+                "repo.json",
+                repository_id="repo",
+                source_commit="a" * 40,
+                endpoints=[_endpoint("consumed", "GET", "/health")],
+            )
+            payload = json.loads(findings.read_text(encoding="utf-8"))
+            payload["endpoints"][0]["method"] = "BREW"
+            findings.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+            with self.assertRaises(CorrelationError):
+                self._correlate(findings)
+
+    def test_endpoint_additional_property_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            findings = _write_findings(
+                root,
+                "repo.json",
+                repository_id="repo",
+                source_commit="a" * 40,
+                endpoints=[_endpoint("consumed", "GET", "/health")],
+            )
+            payload = json.loads(findings.read_text(encoding="utf-8"))
+            payload["endpoints"][0]["guessed_provider"] = "warehouse"
+            findings.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+            with self.assertRaises(CorrelationError):
+                self._correlate(findings)
+
     def test_deterministic_ordering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

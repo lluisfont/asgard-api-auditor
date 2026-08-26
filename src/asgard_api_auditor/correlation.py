@@ -9,6 +9,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import resources
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -18,7 +19,7 @@ from .artifacts import sha256_file
 from .constants import CORRELATIONS_SCHEMA_VERSION, FINDINGS_SCHEMA_VERSION
 from .path_normalization import normalized_path_shape
 from .redaction import contains_unredacted_secret_like_value, redact_text
-from .schema_validation import SchemaValidationError, load_json_schema, validate_json_schema
+from .schema_validation import SchemaValidationError, validate_json_schema
 
 CorrelationStatus = Literal[
     "matched_confirmed",
@@ -32,7 +33,7 @@ class CorrelationError(ValueError):
     """Raised when correlation inputs or outputs fail closed."""
 
 
-SCHEMAS_DIR = Path(__file__).resolve().parents[2] / "schemas"
+SCHEMAS_PACKAGE = "asgard_api_auditor.schemas"
 
 
 @dataclass(frozen=True)
@@ -89,13 +90,14 @@ def _validate_endpoint(endpoint: object, *, index: int, source: Path) -> dict[st
 
 
 def _schema(name: str) -> dict[str, object]:
-    path = SCHEMAS_DIR / name
-    if not path.is_file():
-        path = Path.cwd() / "schemas" / name
     try:
-        return load_json_schema(path)
-    except SchemaValidationError as exc:
-        raise CorrelationError(str(exc)) from exc
+        schema_file = resources.files(SCHEMAS_PACKAGE).joinpath(name)
+        payload = json.loads(schema_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ModuleNotFoundError, OSError, json.JSONDecodeError) as exc:
+        raise CorrelationError(f"Unable to read packaged JSON schema {name}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CorrelationError(f"Packaged JSON schema {name} must be an object")
+    return payload
 
 
 def _load_findings(path: Path) -> FindingsSnapshot:

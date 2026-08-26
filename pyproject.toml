@@ -17,6 +17,9 @@ asgard-api-auditor = "asgard_api_auditor.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+asgard_api_auditor = ["schemas/*.schema.json"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
