@@ -286,6 +286,45 @@ class CorrelationTests(unittest.TestCase):
             with self.assertRaises(CorrelationError):
                 self._correlate(findings)
 
+    def test_missing_packaged_schema_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = _write_findings(
+                Path(tmp),
+                "repo.json",
+                repository_id="repo",
+                source_commit="a" * 40,
+                endpoints=[_endpoint("consumed", "GET", "/health")],
+            )
+
+            with patch(
+                "asgard_api_auditor.correlation.resources.files",
+                side_effect=FileNotFoundError("missing packaged schema"),
+            ), self.assertRaises(CorrelationError):
+                self._correlate(findings)
+
+    def test_corrupt_packaged_schema_fails_closed(self) -> None:
+        class CorruptSchemaResource:
+            def joinpath(self, _name: str) -> CorruptSchemaResource:
+                return self
+
+            def read_text(self, *, encoding: str) -> str:
+                return "{"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = _write_findings(
+                Path(tmp),
+                "repo.json",
+                repository_id="repo",
+                source_commit="a" * 40,
+                endpoints=[_endpoint("consumed", "GET", "/health")],
+            )
+
+            with patch(
+                "asgard_api_auditor.correlation.resources.files",
+                return_value=CorruptSchemaResource(),
+            ), self.assertRaises(CorrelationError):
+                self._correlate(findings)
+
     def test_endpoint_additional_property_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
