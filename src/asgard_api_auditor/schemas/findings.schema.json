@@ -89,6 +89,7 @@
         "authorization": {"type": ["string", "null"]},
         "request": {"$ref": "#/$defs/request"},
         "response": {"$ref": "#/$defs/response"},
+        "behavior": {"$ref": "#/$defs/semanticBehavior"},
         "confidence": {"enum": ["confirmed", "probable", "unverified"]},
         "confidence_reason": {"type": "string", "minLength": 1},
         "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
@@ -125,6 +126,7 @@
         "exclusion_rules": {"type": "array", "items": {"type": "string"}},
         "unsupported_surfaces": {"type": "array", "items": {"type": "string"}},
         "contract_enrichment": {"$ref": "#/$defs/contractEnrichmentCoverage"},
+        "semantic_enrichment": {"$ref": "#/$defs/semanticEnrichmentCoverage"},
         "notes": {"type": "array", "items": {"type": "string"}},
         "required_detector_categories": {"type": "array", "items": {"enum": ["inventory", "exposed", "consumed", "framework", "configuration", "existing_spec", "integration"]}}
       },
@@ -155,6 +157,132 @@
         "security_enrichment_applicable": {"type": "integer", "minimum": 0},
         "security_enriched": {"type": "integer", "minimum": 0},
         "unresolved_contract_enrichment": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "semanticFact": {
+      "type": "object",
+      "required": ["id", "evidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"type": ["string", "null"]},
+        "operation": {"type": ["string", "null"]},
+        "name": {"type": ["string", "null"]},
+        "resource": {"type": ["string", "null"]},
+        "target": {"type": ["string", "null"]},
+        "integration_type": {"type": ["string", "null"]},
+        "source_fields": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
+    "semanticJwtClaim": {
+      "type": "object",
+      "required": ["claim", "evidence"],
+      "properties": {
+        "claim": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
+    "semanticCondition": {
+      "type": "object",
+      "required": ["id", "condition", "body_fields", "evidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "condition": {"type": "string", "minLength": 1},
+        "body_fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["field", "expression"],
+            "properties": {
+              "field": {"type": "string", "minLength": 1},
+              "variable": {"type": ["string", "null"]},
+              "expression": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        },
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
+    "semanticUnresolved": {
+      "type": "object",
+      "required": ["code", "message", "evidence"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
+    "semanticRequestField": {
+      "type": "object",
+      "required": ["name", "variable", "evidence"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "variable": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
+    "semanticBehavior": {
+      "type": "object",
+      "required": ["schema_version", "semantic_status", "confidence", "summary", "tags", "request_fields", "data_access", "auth_context", "local_calls", "outbound_integrations", "conditions", "response_semantics", "side_effects", "unresolved", "evidence"],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "semantic_status": {"enum": ["complete", "partial", "unresolved"]},
+        "confidence": {"enum": ["confirmed", "probable", "unverified"]},
+        "summary": {"type": "string", "minLength": 1},
+        "source_module": {"type": ["string", "null"]},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "request_fields": {"type": "array", "items": {"$ref": "#/$defs/semanticRequestField"}},
+        "data_access": {"type": "array", "items": {"$ref": "#/$defs/semanticFact"}},
+        "auth_context": {
+          "type": "object",
+          "required": ["consumed_jwt_claims", "produced_jwt_claims"],
+          "properties": {
+            "consumed_jwt_claims": {"type": "array", "items": {"$ref": "#/$defs/semanticJwtClaim"}},
+            "produced_jwt_claims": {"type": "array", "items": {"$ref": "#/$defs/semanticJwtClaim"}}
+          },
+          "additionalProperties": false
+        },
+        "local_calls": {"type": "array", "items": {"$ref": "#/$defs/semanticFact"}},
+        "outbound_integrations": {"type": "array", "items": {"$ref": "#/$defs/semanticFact"}},
+        "conditions": {"type": "array", "items": {"$ref": "#/$defs/semanticCondition"}},
+        "response_semantics": {
+          "type": "object",
+          "required": ["http_status_codes", "body_fields", "functional_body_fields"],
+          "properties": {
+            "http_status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}},
+            "body_fields": {"type": "array", "items": {"type": "string"}},
+            "functional_body_fields": {"type": "array", "items": {"type": "string"}}
+          },
+          "additionalProperties": false
+        },
+        "side_effects": {"type": "array", "items": {"$ref": "#/$defs/semanticFact"}},
+        "unresolved": {"type": "array", "items": {"$ref": "#/$defs/semanticUnresolved"}},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
+    "semanticEnrichmentCoverage": {
+      "type": "object",
+      "required": ["total_exposed_endpoints", "semantic_analysis_attempted", "semantic_complete", "semantic_partial", "semantic_unresolved", "operations_with_non_generic_description", "operations_with_data_access_facts", "operations_with_auth_context_facts", "operations_with_conditional_outcome_facts", "operations_with_outbound_integration_facts", "semantic_unresolved_count"],
+      "properties": {
+        "total_exposed_endpoints": {"type": "integer", "minimum": 0},
+        "semantic_analysis_attempted": {"type": "integer", "minimum": 0},
+        "semantic_complete": {"type": "integer", "minimum": 0},
+        "semantic_partial": {"type": "integer", "minimum": 0},
+        "semantic_unresolved": {"type": "integer", "minimum": 0},
+        "operations_with_non_generic_description": {"type": "integer", "minimum": 0},
+        "operations_with_data_access_facts": {"type": "integer", "minimum": 0},
+        "operations_with_auth_context_facts": {"type": "integer", "minimum": 0},
+        "operations_with_conditional_outcome_facts": {"type": "integer", "minimum": 0},
+        "operations_with_outbound_integration_facts": {"type": "integer", "minimum": 0},
+        "semantic_unresolved_count": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": false
     },

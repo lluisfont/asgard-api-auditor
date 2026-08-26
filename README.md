@@ -12,9 +12,9 @@ La pregunta operativa es:
 
 ## Estado
 
-**v0.6.0 — correlación determinística proveedor-consumidor sobre `findings.json`.**
+**v0.7.0 — reconstrucción semántica determinística para OpenAPI AI-ready.**
 
-La v0.3 detecta tecnologías y superficies. La v0.4.x localiza endpoints HTTP expuestos/consumidos y operaciones SOAP con cobertura fail-closed. La v0.5 convierte ese discovery en artefactos auditables y reutilizables. La v0.6 añade una primera capa de relación entre consumidores y proveedores a partir de artifacts versionados.
+La v0.3 detecta tecnologías y superficies. La v0.4.x localiza endpoints HTTP expuestos/consumidos y operaciones SOAP con cobertura fail-closed. La v0.5 convierte ese discovery en artefactos auditables y reutilizables. La v0.6 añade una primera capa de relación entre consumidores y proveedores a partir de artifacts versionados. La v0.7 añade una capa semántica determinística entre el enrichment de contratos y la generación de OpenAPI/findings.
 
 ## Inventario técnico
 
@@ -61,7 +61,7 @@ Si aparece un framework, cliente o patrón no soportado, `discovery_complete=fal
 
 Más detalle: [`docs/endpoint-discovery.md`](docs/endpoint-discovery.md).
 
-## Generación de auditoría v0.6
+## Generación de auditoría v0.7
 
 ```bash
 asgard-api-auditor audit /ruta/al/repositorio \
@@ -86,7 +86,9 @@ Los mismos snapshots SOAP de `discover` pueden pasarse a `audit` con `--soap-wsd
 - Las llamadas HTTP consumidas permanecen en `findings.json` y `api-knowledge.md`; no se convierten en paths del proveedor.
 - SOAP permanece como superficie de integración separada y nunca se convierte artificialmente en REST.
 - Request bodies, responses, autenticación y autorización se añaden solo cuando pueden demostrarse desde código Slim/PHP.
-- v0.6.0 registra cobertura objetiva de enrichment y mantiene un blocker explícito `contract-enrichment-v0.6.0-coverage-gate`; por tanto el `audit` permanece `partial` aunque `discovery_complete=true`.
+- Cada operación expuesta incluye `x-asgard-behavior` con hechos semánticos trazables: acceso a datos, JWT consumido/producido, condiciones, response body funcional, llamadas locales, integraciones salientes, efectos laterales y unresolved.
+- `codigo`, `estado` y `mensaje` del body se registran como campos funcionales y no se transforman en HTTP status; solo `withStatus(...)` demuestra status HTTP explícito.
+- v0.7.0 registra cobertura objetiva de contract enrichment y semantic enrichment, y mantiene un blocker explícito `contract-enrichment-v0.7.0-coverage-gate`; por tanto el `audit` permanece `partial` aunque `discovery_complete=true`.
 - Los detectores de consumidores HTTP enmascaran comentarios antes de buscar llamadas activas, preservando líneas/evidencia y evitando falsos positivos de código comentado.
 
 Más detalle: [`docs/audit-artifacts.md`](docs/audit-artifacts.md).
@@ -137,7 +139,7 @@ discover (v0.4)
         +--> unresolved / unsupported
         |
         v
-audit artifacts (v0.6)
+audit artifacts (v0.7)
         +--> openapi.yaml
         +--> api-knowledge.md
         +--> findings.json
@@ -155,7 +157,7 @@ fases siguientes
 
 `discovery_complete=true` solo puede producirse cuando el inventario terminó sin huecos conocidos, existe al menos un detector aplicable, todos los detectores ejecutados están soportados y no existen patrones o superficies pendientes.
 
-`audit status=complete` exige además que el contrato behavioral esté reconstruido y validado. En v0.6.0 el audit permanece intencionadamente `partial`: existe enrichment Slim/PHP parcial y trazable, y la correlación se genera en artifacts separados para evaluación explícita antes de futuros gates de breaking changes.
+`audit status=complete` exige además que el contrato behavioral esté reconstruido y validado. En v0.7.0 el audit permanece intencionadamente `partial`: existe enrichment Slim/PHP semántico parcial y trazable, y la correlación se genera en artifacts separados para evaluación explícita antes de futuros gates de breaking changes.
 
 Encontrar cero endpoints nunca se interpreta automáticamente como ausencia de APIs.
 

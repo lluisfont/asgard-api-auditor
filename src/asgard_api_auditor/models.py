@@ -107,6 +107,7 @@ class EndpointFinding:
     authorization: str | None = None
     request: RequestFinding | None = None
     response: ResponseFinding | None = None
+    behavior: dict[str, object] | None = None
     confidence: Confidence = "unverified"
     notes: list[str] = field(default_factory=list)
     endpoint_id: str = ""

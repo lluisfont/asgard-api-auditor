@@ -21,6 +21,11 @@ from .inventory import inventory_repository
 from .models import AuditTarget, EndpointFinding, Evidence, TechnicalInventory
 from .path_normalization import ROUTE_PARAMETER, normalized_path_shape, path_parameter_names
 from .redaction import redact_text
+from .semantics import (
+    SemanticEnrichmentResult,
+    enrich_slim_php_semantics,
+    semantic_unresolved_payload,
+)
 
 _ALLOWED_FINDINGS_EVIDENCE = {
     "route",
@@ -96,6 +101,8 @@ def _endpoint_payload(endpoint: EndpointFinding) -> dict[str, object]:
         payload["request"] = asdict(endpoint.request)
     if endpoint.response is not None:
         payload["response"] = asdict(endpoint.response)
+    if endpoint.behavior is not None:
+        payload["behavior"] = endpoint.behavior
     return payload
 
 
@@ -216,10 +223,147 @@ def _render_fields(schema: dict[str, object] | None) -> str:
     return ", ".join(f"`{name}`" for name in sorted(properties))
 
 
+_OLD_GENERIC_DESCRIPTION = "Discovered from source. Request/response/authentication details are not yet reconstructed."
+
+
+def _behavior(endpoint: EndpointFinding) -> dict[str, object]:
+    return endpoint.behavior if isinstance(endpoint.behavior, dict) else {}
+
+
+def _behavior_summary(endpoint: EndpointFinding) -> str:
+    behavior = _behavior(endpoint)
+    summary = behavior.get("summary")
+    if isinstance(summary, str) and summary and summary != _OLD_GENERIC_DESCRIPTION:
+        return summary
+    return f"{endpoint.method} {endpoint.path} semantic facts unresolved"
+
+
+def _behavior_tags(endpoint: EndpointFinding) -> list[str]:
+    behavior = _behavior(endpoint)
+    tags = behavior.get("tags")
+    if isinstance(tags, list) and tags:
+        return [str(item) for item in tags if str(item)]
+    return ["module:unknown"]
+
+
+def _behavior_lines(endpoint: EndpointFinding) -> list[str]:
+    behavior = _behavior(endpoint)
+    if not behavior:
+        return [
+            "Behavior",
+            "",
+            "- Semantic status: unresolved",
+            "- Unresolved: semantic behavior was not reconstructed.",
+        ]
+    data_access = behavior.get("data_access") if isinstance(behavior.get("data_access"), list) else []
+    request_fields = behavior.get("request_fields") if isinstance(behavior.get("request_fields"), list) else []
+    reads = sorted({str(item.get("resource")) for item in data_access if isinstance(item, dict) and item.get("operation") == "SELECT"})
+    writes = sorted(
+        {
+            f"{item.get('operation')} {item.get('resource')}"
+            for item in data_access
+            if isinstance(item, dict) and item.get("operation") in {"INSERT", "UPDATE", "DELETE", "CALL"}
+        }
+    )
+    auth = behavior.get("auth_context") if isinstance(behavior.get("auth_context"), dict) else {}
+    consumed = auth.get("consumed_jwt_claims") if isinstance(auth, dict) and isinstance(auth.get("consumed_jwt_claims"), list) else []
+    produced = auth.get("produced_jwt_claims") if isinstance(auth, dict) and isinstance(auth.get("produced_jwt_claims"), list) else []
+    conditions = behavior.get("conditions") if isinstance(behavior.get("conditions"), list) else []
+    outbound = behavior.get("outbound_integrations") if isinstance(behavior.get("outbound_integrations"), list) else []
+    side_effects = behavior.get("side_effects") if isinstance(behavior.get("side_effects"), list) else []
+    unresolved = behavior.get("unresolved") if isinstance(behavior.get("unresolved"), list) else []
+    response = behavior.get("response_semantics") if isinstance(behavior.get("response_semantics"), dict) else {}
+    lines = [
+        "Behavior",
+        "",
+        f"- Semantic status: {behavior.get('semantic_status', 'unresolved')}",
+        f"- Summary: {_behavior_summary(endpoint)}",
+        f"- Source module: {behavior.get('source_module', 'unknown')}",
+        "",
+        "Request fields",
+        "",
+        *(f"- `{item.get('name')}` via `{item.get('variable')}`" for item in request_fields if isinstance(item, dict)),
+        *(["- n/a"] if not request_fields else []),
+        "",
+        "Data read",
+        "",
+        *(f"- {item}" for item in reads),
+        *(["- n/a"] if not reads else []),
+        "",
+        "Data written",
+        "",
+        *(f"- {item}" for item in writes),
+        *(["- n/a"] if not writes else []),
+        "",
+        "Auth context",
+        "",
+        "- Consumed JWT claims: "
+        + (", ".join(f"`{item.get('claim')}`" for item in consumed if isinstance(item, dict)) or "n/a"),
+        "- Produced JWT claims: "
+        + (", ".join(f"`{item.get('claim')}`" for item in produced if isinstance(item, dict)) or "n/a"),
+        "",
+        "Response semantics",
+        "",
+        "- HTTP statuses: " + (", ".join(str(item) for item in response.get("http_status_codes", [])) or "default/unknown"),
+        "- Body fields: " + (", ".join(f"`{item}`" for item in response.get("body_fields", [])) or "n/a"),
+        "- Functional body fields: " + (", ".join(f"`{item}`" for item in response.get("functional_body_fields", [])) or "n/a"),
+        "",
+        "Conditions",
+        "",
+        *(
+            "- "
+            + str(item.get("condition"))
+            + " -> "
+            + (
+                ", ".join(
+                    f"{field.get('field')}={field.get('expression')}"
+                    for field in item.get("body_fields", [])
+                    if isinstance(field, dict)
+                )
+                or "outcome unresolved"
+            )
+            for item in conditions
+            if isinstance(item, dict)
+        ),
+        *(["- n/a"] if not conditions else []),
+        "",
+        "Local calls",
+        "",
+        *(f"- {item.get('name')}" for item in behavior.get("local_calls", []) if isinstance(item, dict)),
+        *(["- n/a"] if not behavior.get("local_calls") else []),
+        "",
+        "Outbound",
+        "",
+        *(f"- {item.get('type')}: {item.get('target') or item.get('operation') or 'target unresolved'}" for item in outbound if isinstance(item, dict)),
+        *(["- n/a"] if not outbound else []),
+        "",
+        "Side effects",
+        "",
+        *(f"- {item.get('type')}: {item.get('operation') or item.get('resource') or item.get('integration_type') or 'source-proven'}" for item in side_effects if isinstance(item, dict)),
+        *(["- n/a"] if not side_effects else []),
+        "",
+        "Unresolved",
+        "",
+        *(f"- {item.get('code')}: {item.get('message')}" for item in unresolved if isinstance(item, dict)),
+        *(["- n/a"] if not unresolved else []),
+        "",
+        "Evidence",
+        "",
+        *(
+            f"- {item.get('path')}:{item.get('line') or '?'} {item.get('note') or ''}".rstrip()
+            for item in behavior.get("evidence", [])
+            if isinstance(item, dict)
+        ),
+        *(["- n/a"] if not behavior.get("evidence") else []),
+    ]
+    return lines
+
+
 def _render_knowledge(
     audit_id: str,
     discovery: EndpointDiscovery,
     enrichment: ContractEnrichmentResult,
+    semantics: SemanticEnrichmentResult,
 ) -> str:
     exposed = [item for item in discovery.endpoints if item.direction == "exposed"]
     consumed = [item for item in discovery.endpoints if item.direction == "consumed"]
@@ -239,6 +383,8 @@ def _render_knowledge(
         f"- Integration findings: **{len(discovery.integrations)}**",
         f"- Discovery complete: **{str(discovery.discovery_complete).lower()}**",
         f"- Contract enrichment unresolved: **{enrichment.coverage.unresolved_contract_enrichment}**",
+        f"- Semantic complete: **{semantics.coverage.semantic_complete}/{semantics.coverage.total_exposed_endpoints}**",
+        f"- Semantic unresolved: **{semantics.coverage.semantic_unresolved_count}**",
         "",
         "## Exposed HTTP",
         "",
@@ -254,9 +400,13 @@ def _render_knowledge(
                 f"- Confidence: `{item.confidence}`",
                 f"- Evidence: {_evidence_label(item) or 'n/a'}",
                 f"- Contract enrichment: `{_contract_status(item)}`",
+                f"- Semantic status: `{_behavior(item).get('semantic_status', 'unresolved')}`",
+                f"- Semantic summary: {_behavior_summary(item)}",
                 f"- Request fields: {_render_fields(item.request.body_schema if item.request else None)}",
                 f"- Response fields: {_render_fields(item.response.schema if item.response else None)}",
                 f"- Authentication: `{item.authentication or 'unknown'}`",
+                "",
+                *_behavior_lines(item),
                 "",
             ]
         )
@@ -299,6 +449,8 @@ def _render_knowledge(
         lines.append(f"- **{issue.code}** — {issue.message}")
     for issue in enrichment.unresolved:
         lines.append(f"- **{issue.code}** — {issue.message}")
+    for issue in semantics.unresolved:
+        lines.append(f"- **{issue.code}** — {issue.message}")
     lines.extend(
         [
             "",
@@ -309,6 +461,18 @@ def _render_knowledge(
             f"- Response enrichment: **{enrichment.coverage.response_enriched}/{enrichment.coverage.response_enrichment_applicable}**",
             f"- Security enrichment: **{enrichment.coverage.security_enriched}/{enrichment.coverage.security_enrichment_applicable}**",
             "",
+            "## Semantic Enrichment Coverage",
+            "",
+            f"- Analysis attempted: **{semantics.coverage.semantic_analysis_attempted}/{semantics.coverage.total_exposed_endpoints}**",
+            f"- Complete: **{semantics.coverage.semantic_complete}**",
+            f"- Partial: **{semantics.coverage.semantic_partial}**",
+            f"- Unresolved endpoints: **{semantics.coverage.semantic_unresolved}**",
+            f"- Operations with data access facts: **{semantics.coverage.operations_with_data_access_facts}**",
+            f"- Operations with auth-context facts: **{semantics.coverage.operations_with_auth_context_facts}**",
+            f"- Operations with conditional/outcome facts: **{semantics.coverage.operations_with_conditional_outcome_facts}**",
+            f"- Operations with outbound integration facts: **{semantics.coverage.operations_with_outbound_integration_facts}**",
+            f"- Semantic unresolved findings: **{semantics.coverage.semantic_unresolved_count}**",
+            "",
         ]
     )
     return redact_text("\n".join(lines))
@@ -318,6 +482,7 @@ def _render_report(
     audit_id: str,
     discovery: EndpointDiscovery,
     enrichment: ContractEnrichmentResult,
+    semantics: SemanticEnrichmentResult,
 ) -> str:
     exposed = sum(1 for item in discovery.endpoints if item.direction == "exposed")
     consumed = sum(1 for item in discovery.endpoints if item.direction == "consumed")
@@ -336,6 +501,8 @@ def _render_report(
         f"- Consumed HTTP endpoints: **{consumed}**",
         f"- Integration findings: **{len(discovery.integrations)}**",
         f"- Discovery complete: **{str(discovery.discovery_complete).lower()}**",
+        f"- Semantic complete: **{semantics.coverage.semantic_complete}/{semantics.coverage.total_exposed_endpoints}**",
+        f"- Semantic unresolved findings: **{semantics.coverage.semantic_unresolved_count}**",
         "",
         "## Contract enrichment coverage",
         "",
@@ -345,6 +512,18 @@ def _render_report(
         f"- Response enrichment: **{enrichment.coverage.response_enriched}/{enrichment.coverage.response_enrichment_applicable}**",
         f"- Security enrichment: **{enrichment.coverage.security_enriched}/{enrichment.coverage.security_enrichment_applicable}**",
         f"- Unresolved contract enrichment: **{enrichment.coverage.unresolved_contract_enrichment}**",
+        "",
+        "## Semantic enrichment coverage",
+        "",
+        f"- Analysis attempted: **{semantics.coverage.semantic_analysis_attempted}/{semantics.coverage.total_exposed_endpoints}**",
+        f"- Complete: **{semantics.coverage.semantic_complete}**",
+        f"- Partial: **{semantics.coverage.semantic_partial}**",
+        f"- Unresolved endpoints: **{semantics.coverage.semantic_unresolved}**",
+        f"- Operations with non-generic descriptions: **{semantics.coverage.operations_with_non_generic_description}**",
+        f"- Operations with data access facts: **{semantics.coverage.operations_with_data_access_facts}**",
+        f"- Operations with auth-context facts: **{semantics.coverage.operations_with_auth_context_facts}**",
+        f"- Operations with conditional/outcome facts: **{semantics.coverage.operations_with_conditional_outcome_facts}**",
+        f"- Operations with outbound integration facts: **{semantics.coverage.operations_with_outbound_integration_facts}**",
         "",
         "## Blocking work before full audit completion",
         "",
@@ -358,6 +537,9 @@ def _render_report(
     if enrichment.unresolved:
         lines.append("- Resolve contract-enrichment blocking findings listed below.")
         lines.extend(f"  - `{item.code}`: {item.message}" for item in enrichment.unresolved)
+    if semantics.unresolved:
+        lines.append("- Resolve semantic-enrichment findings listed below.")
+        lines.extend(f"  - `{item.code}`: {item.message}" for item in semantics.unresolved)
     lines.extend(
         [
             "",
@@ -502,12 +684,15 @@ def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
                 [
                     f"    {endpoint.method.lower()}:",
                     f"      operationId: {json.dumps(_operation_id(endpoint))}",
-                    f"      summary: {json.dumps(endpoint.method + ' ' + endpoint.path)}",
-                    "      description: \"Discovered from source. Request/response/authentication details are not yet reconstructed.\"",
+                    f"      summary: {json.dumps(_behavior_summary(endpoint))}",
+                    f"      description: {json.dumps(chr(10).join(_behavior_lines(endpoint)))}",
+                    "      tags:",
+                    *(f"        - {json.dumps(tag)}" for tag in _behavior_tags(endpoint)),
                     f"      x-asgard-endpoint-id: {json.dumps(endpoint.endpoint_id)}",
                     f"      x-asgard-confidence: {json.dumps(endpoint.confidence)}",
                     f"      x-asgard-source-path: {json.dumps(endpoint.path)}",
                     f"      x-asgard-path-canonicalized: {str(canonicalized).lower()}",
+                    f"      x-asgard-behavior: {json.dumps(_behavior(endpoint), sort_keys=True)}",
                 ]
             )
             evidence = [
@@ -580,13 +765,15 @@ def _findings(
     inventory: TechnicalInventory,
     discovery: EndpointDiscovery,
     enrichment: ContractEnrichmentResult,
+    semantics: SemanticEnrichmentResult,
     artifact_hashes: dict[str, str],
 ) -> dict[str, object]:
     unresolved = [_unresolved_payload(item) for item in discovery.unresolved]
     unresolved.extend(_contract_unresolved_payload(item) for item in enrichment.unresolved)
+    unresolved.extend(semantic_unresolved_payload(item) for item in semantics.unresolved)
     unresolved.append(
         {
-            "unresolved_id": "contract-enrichment-v0.6.0-coverage-gate",
+            "unresolved_id": "contract-enrichment-v0.7.0-coverage-gate",
             "category": "schema",
             "description": (
                 "Audit completion remains gated until deterministic contract enrichment coverage "
@@ -621,6 +808,7 @@ def _findings(
             "exclusion_rules": list(inventory.excluded_roots),
             "unsupported_surfaces": unsupported_surfaces,
             "contract_enrichment": enrichment.coverage.to_dict(),
+            "semantic_enrichment": semantics.coverage.to_dict(),
             "notes": [
                 "Exact excluded-file count is not tracked in technical inventory v1.0.",
                 "Audit status remains partial until all completion gates are explicitly satisfied.",
@@ -656,6 +844,8 @@ def generate_audit(
     files = iter_source_files(repository, target.exclude_paths)
     enrichment = enrich_slim_php_contracts(repository, discovery.endpoints, files)
     discovery.endpoints = enrichment.endpoints
+    semantics = enrich_slim_php_semantics(repository, discovery.endpoints, files, discovery.integrations)
+    discovery.endpoints = semantics.endpoints
     audit_id = _audit_id(target, discovery, mappings)
     destination = target.output.resolve()
 
@@ -667,15 +857,15 @@ def generate_audit(
         findings_path = staging / "findings.json"
 
         openapi_path.write_text(_render_openapi(audit_id, discovery), encoding="utf-8")
-        knowledge_path.write_text(_render_knowledge(audit_id, discovery, enrichment), encoding="utf-8")
-        report_path.write_text(_render_report(audit_id, discovery, enrichment), encoding="utf-8")
+        knowledge_path.write_text(_render_knowledge(audit_id, discovery, enrichment, semantics), encoding="utf-8")
+        report_path.write_text(_render_report(audit_id, discovery, enrichment, semantics), encoding="utf-8")
 
         hashes = {
             "openapi.yaml": sha256_file(openapi_path),
             "api-knowledge.md": sha256_file(knowledge_path),
             "audit-report.md": sha256_file(report_path),
         }
-        findings = _findings(audit_id, inventory, discovery, enrichment, hashes)
+        findings = _findings(audit_id, inventory, discovery, enrichment, semantics, hashes)
         findings_text = redact_text(json.dumps(findings, indent=2, sort_keys=True) + "\n")
         findings_path.write_text(findings_text, encoding="utf-8")
 
