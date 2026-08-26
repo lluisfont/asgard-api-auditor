@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0 - 2026-08-26
+
+### Added
+
+- `asgard-api-auditor correlate` now builds deterministic provider-consumer relationship artifacts from one or more versioned `findings.json` inputs.
+- New atomic correlation artifact set: `correlations.json` and `api-relations.md`.
+- New `schemas/correlations.schema.json` contract with coverage metrics, per-consumer status records and a provider reverse impact index.
+
+### Changed
+
+- Route path-shape normalization is shared between OpenAPI generation and correlation.
+- Audit completion remains fail-closed; unique structural correlation is reported as `matched_unique_candidate`, not as a confirmed runtime dependency.
+
 ## 0.5.4 - 2026-08-26
 
 ### Changed

@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
+from .correlation import CorrelationError, correlate_findings
 from .discovery import discover_endpoints, discovery_to_dict
 from .generation import generate_audit
 from .inventory import InventoryError, inventory_repository, inventory_to_dict
@@ -48,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    audit = subparsers.add_parser("audit", help="Generate the v0.5 audit artifact set")
+    audit = subparsers.add_parser("audit", help="Generate the audit artifact set")
     audit.add_argument("repository", type=Path, help="Local Git repository root")
     audit.add_argument("--ref", default="HEAD", help="Git ref; it must resolve to checked-out HEAD")
     audit.add_argument("--repository-id", help="Stable logical repository ID")
@@ -63,6 +64,24 @@ def build_parser() -> argparse.ArgumentParser:
             "Map a SOAP service expression/value to a versioned repository-local WSDL snapshot; "
             "may be repeated"
         ),
+    )
+
+    correlate = subparsers.add_parser(
+        "correlate",
+        help="Correlate consumed HTTP endpoints with provider candidates from findings artifacts.",
+    )
+    correlate.add_argument(
+        "--findings",
+        action="append",
+        type=Path,
+        required=True,
+        help="Path to a findings.json artifact; may be repeated",
+    )
+    correlate.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Output directory for correlations.json and api-relations.md",
     )
     return parser
 
@@ -171,9 +190,25 @@ def _audit_command(args: argparse.Namespace) -> int:
     return 0 if findings["status"] == "complete" else 3
 
 
+def _correlate_command(args: argparse.Namespace) -> int:
+    try:
+        destination, payload = correlate_findings(args.findings, args.output)
+    except CorrelationError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    coverage = payload["coverage"]
+    assert isinstance(coverage, dict)
+    print(f"Correlation artifacts written to {destination}")
+    print(
+        "Correlation status: "
+        f"{coverage['consumers_correlated']}/{coverage['consumers_total']} consumers have candidates"
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     actual = list(sys.argv[1:] if argv is None else argv)
-    if actual and actual[0] not in {"inventory", "discover", "audit"} and not actual[0].startswith("-"):
+    if actual and actual[0] not in {"inventory", "discover", "audit", "correlate"} and not actual[0].startswith("-"):
         actual.insert(0, "audit")
     parser = build_parser()
     args = parser.parse_args(actual)
@@ -183,6 +218,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _discover_command(args)
     if args.command == "audit":
         return _audit_command(args)
+    if args.command == "correlate":
+        return _correlate_command(args)
     parser.print_help()
     return 2
 

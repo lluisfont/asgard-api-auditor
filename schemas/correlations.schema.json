@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asgard.local/schemas/correlations.schema.json",
+  "title": "ASGARD API Provider Consumer Correlations",
+  "type": "object",
+  "required": ["schema_version", "correlation_id", "auditor_version", "generated_at", "inputs", "coverage", "correlations", "provider_reverse_index"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "correlation_id": {"type": "string", "minLength": 8},
+    "auditor_version": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "inputs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/input"}},
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "correlations": {"type": "array", "items": {"$ref": "#/$defs/correlation"}},
+    "provider_reverse_index": {"type": "array", "items": {"$ref": "#/$defs/providerReverseIndex"}},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "required": ["audit_id", "repository", "repository_id", "source_ref", "source_commit", "auditor_version", "schema_version", "sha256"],
+      "properties": {
+        "audit_id": {"type": "string", "minLength": 1},
+        "repository": {"type": "string", "minLength": 1},
+        "repository_id": {"type": "string", "minLength": 1},
+        "source_ref": {"type": "string", "minLength": 1},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-fA-F]{7,64}$"},
+        "auditor_version": {"type": "string", "minLength": 1},
+        "schema_version": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["path", "kind"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "end_line": {"type": ["integer", "null"], "minimum": 1},
+        "symbol": {"type": ["string", "null"]},
+        "kind": {"type": "string", "minLength": 1},
+        "note": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "provider": {
+      "type": "object",
+      "required": ["provider_repository", "provider_repository_id", "provider_endpoint_id", "provider_method", "provider_path", "provider_evidence"],
+      "properties": {
+        "provider_repository": {"type": "string", "minLength": 1},
+        "provider_repository_id": {"type": "string", "minLength": 1},
+        "provider_endpoint_id": {"type": "string", "minLength": 1},
+        "provider_method": {"type": "string", "minLength": 1},
+        "provider_path": {"type": "string", "minLength": 1},
+        "provider_evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
+    "consumerRef": {
+      "type": "object",
+      "required": ["correlation_id", "consumer_repository", "consumer_repository_id", "consumer_endpoint_id", "consumer_method", "consumer_path", "consumer_evidence", "status"],
+      "properties": {
+        "correlation_id": {"type": "string", "minLength": 1},
+        "consumer_repository": {"type": "string", "minLength": 1},
+        "consumer_repository_id": {"type": "string", "minLength": 1},
+        "consumer_endpoint_id": {"type": "string", "minLength": 1},
+        "consumer_method": {"type": "string", "minLength": 1},
+        "consumer_path": {"type": "string", "minLength": 1},
+        "consumer_base_url": {"type": ["string", "null"]},
+        "consumer_evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "status": {"enum": ["matched_confirmed", "matched_unique_candidate", "ambiguous", "unmatched"]}
+      },
+      "additionalProperties": false
+    },
+    "correlation": {
+      "type": "object",
+      "required": ["correlation_id", "status", "consumer_repository", "consumer_repository_id", "consumer_endpoint_id", "consumer_method", "consumer_path", "consumer_base_url", "consumer_evidence", "normalized_path_shape", "candidate_count", "candidate_providers", "match_strategy", "confidence"],
+      "properties": {
+        "correlation_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["matched_confirmed", "matched_unique_candidate", "ambiguous", "unmatched"]},
+        "consumer_repository": {"type": "string", "minLength": 1},
+        "consumer_repository_id": {"type": "string", "minLength": 1},
+        "consumer_endpoint_id": {"type": "string", "minLength": 1},
+        "consumer_method": {"type": "string", "minLength": 1},
+        "consumer_path": {"type": "string", "minLength": 1},
+        "consumer_base_url": {"type": ["string", "null"]},
+        "consumer_evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "normalized_path_shape": {"type": "string", "minLength": 1},
+        "candidate_count": {"type": "integer", "minimum": 0},
+        "candidate_providers": {"type": "array", "items": {"$ref": "#/$defs/provider"}},
+        "match_strategy": {"type": "string", "minLength": 1},
+        "confidence": {
+          "type": "object",
+          "required": ["classification", "semantics"],
+          "properties": {
+            "classification": {"type": "string", "minLength": 1},
+            "semantics": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "providerReverseIndex": {
+      "type": "object",
+      "required": ["provider_repository", "provider_repository_id", "provider_endpoint_id", "provider_method", "provider_path", "provider_evidence", "confirmed_consumers", "unique_candidate_consumers", "ambiguous_candidate_consumers"],
+      "properties": {
+        "provider_repository": {"type": "string", "minLength": 1},
+        "provider_repository_id": {"type": "string", "minLength": 1},
+        "provider_endpoint_id": {"type": "string", "minLength": 1},
+        "provider_method": {"type": "string", "minLength": 1},
+        "provider_path": {"type": "string", "minLength": 1},
+        "provider_evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "confirmed_consumers": {"type": "array", "items": {"$ref": "#/$defs/consumerRef"}},
+        "unique_candidate_consumers": {"type": "array", "items": {"$ref": "#/$defs/consumerRef"}},
+        "ambiguous_candidate_consumers": {"type": "array", "items": {"$ref": "#/$defs/consumerRef"}}
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["input_repositories", "exposed_endpoints_total", "consumed_endpoints_total", "matched_confirmed", "matched_unique_candidate", "ambiguous", "unmatched", "providers_with_at_least_one_candidate_consumer", "consumers_correlated", "consumers_total", "status_total"],
+      "properties": {
+        "input_repositories": {"type": "integer", "minimum": 1},
+        "exposed_endpoints_total": {"type": "integer", "minimum": 0},
+        "consumed_endpoints_total": {"type": "integer", "minimum": 0},
+        "matched_confirmed": {"type": "integer", "minimum": 0},
+        "matched_unique_candidate": {"type": "integer", "minimum": 0},
+        "ambiguous": {"type": "integer", "minimum": 0},
+        "unmatched": {"type": "integer", "minimum": 0},
+        "providers_with_at_least_one_candidate_consumer": {"type": "integer", "minimum": 0},
+        "consumers_correlated": {"type": "integer", "minimum": 0},
+        "consumers_total": {"type": "integer", "minimum": 0},
+        "status_total": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -126,7 +126,7 @@ class GenerationTests(unittest.TestCase):
             payload = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["status"], "partial")
             ids = {item["unresolved_id"] for item in payload["unresolved"]}
-            self.assertIn("contract-enrichment-v0.5.4-coverage-gate", ids)
+            self.assertIn("contract-enrichment-v0.6.0-coverage-gate", ids)
             exposed = [item for item in payload["endpoints"] if item["direction"] == "exposed"]
             self.assertEqual(len(exposed), 1)
             self.assertIn("request", exposed[0])

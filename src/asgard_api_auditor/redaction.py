@@ -27,7 +27,7 @@ _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
             r"(?i)([?&](?:api[_-]?key|token|access[_-]?token|password|secret)=)"
-            r"[^&#\s]+"
+            r"[^&#\s\"']+"
         ),
         r"\1[REDACTED]",
     ),
