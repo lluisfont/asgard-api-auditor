@@ -28,7 +28,15 @@ _SQL_CALL = re.compile(r"->(?P<method>query|exec|prepare)\s*\(", re.IGNORECASE)
 _SQL_ASSIGN = re.compile(r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*(?P<expr>.*)\s*;\s*$", re.IGNORECASE | re.DOTALL)
 _SQL_APPEND = re.compile(r"(?P<var>\$[A-Za-z_]\w*)\s*\.=\s*(?P<expr>.*)\s*;\s*$", re.IGNORECASE | re.DOTALL)
 _SQL_KEYWORD = re.compile(r"\b(?:SELECT|INSERT|UPDATE|DELETE|CALL)\b", re.IGNORECASE)
+_SQL_FRAGMENT_KEYWORD = re.compile(
+    r"\b(?:SELECT|INSERT|UPDATE|DELETE|CALL|FROM|JOIN|VALUES|WHERE|SET)\b",
+    re.IGNORECASE,
+)
 _REQUEST_ROOT = re.compile(r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*json_decode\s*\(\s*(?:\(\s*string\s*\)\s*)?\$request->getBody\s*\(\s*\)\s*,\s*true\s*\)", re.IGNORECASE | re.DOTALL)
+_PARSED_BODY_ROOT = re.compile(
+    r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*\$request->getParsedBody\s*\(\s*\)",
+    re.IGNORECASE,
+)
 _REQUEST_FIELD_ASSIGN = re.compile(r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*(?P<root>\$[A-Za-z_]\w*)\s*\[\s*['\"](?P<field>[^'\"]+)['\"]\s*\]", re.IGNORECASE)
 _JWT_DECODE_ASSIGN = re.compile(r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*(?:\(array\)\s*)?JWT::decode\s*\(", re.IGNORECASE)
 _JWT_CAST_ASSIGN = re.compile(r"(?P<alias>\$[A-Za-z_]\w*)\s*=\s*\(array\)\s*(?P<source>\$[A-Za-z_]\w*)\s*;", re.IGNORECASE)
@@ -41,9 +49,23 @@ _ARRAY_KEY = re.compile(r"['\"](?P<key>[^'\"]+)['\"]\s*=>")
 _WITH_STATUS = re.compile(r"withStatus\s*\(\s*(?P<status>[1-5][0-9]{2})\s*\)", re.IGNORECASE)
 _IF_START = re.compile(r"\bif\s*\(", re.IGNORECASE)
 _BODY_FIELD = re.compile(r"['\"](?P<field>codigo|estado|mensaje)['\"]\s*=>\s*(?P<expr>[^,\)\]\n]+)", re.IGNORECASE)
+_RESPONSE_FIELD_BINDING = re.compile(
+    r"['\"](?P<field>[A-Za-z_][A-Za-z0-9_]*)['\"]\s*=>\s*(?P<var>\$[A-Za-z_]\w*)",
+    re.IGNORECASE,
+)
+_VARIABLE_ASSIGNMENT = re.compile(
+    r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*(?P<expr>[^;]+);",
+    re.IGNORECASE | re.DOTALL,
+)
 _CURL = re.compile(r"\bcurl_(?:init|setopt|setopt_array|exec)\s*\(", re.IGNORECASE)
 _SOAP = re.compile(r"\bnew\s+SoapClient\s*\(|->__soapCall\s*\(", re.IGNORECASE)
 _HTTP_LITERAL = re.compile(r"['\"](?P<url>https?://[^'\"]+)['\"]", re.IGNORECASE)
+_LITERAL_ASSIGN = re.compile(r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*(?P<expr>[^;]+);", re.IGNORECASE | re.DOTALL)
+_CURL_INIT = re.compile(r"\bcurl_init\s*\(", re.IGNORECASE)
+_CURL_SETOPT = re.compile(r"\bcurl_setopt\s*\(", re.IGNORECASE)
+_CURL_SETOPT_ARRAY = re.compile(r"\bcurl_setopt_array\s*\(", re.IGNORECASE)
+_SOAP_CLIENT = re.compile(r"\bnew\s+SoapClient\s*\(", re.IGNORECASE)
+_SOAP_CALL = re.compile(r"->__soapCall\s*\(", re.IGNORECASE)
 _FILE = re.compile(r"\b(file_put_contents|move_uploaded_file|unlink|fopen)\s*\(", re.IGNORECASE)
 _MAIL = re.compile(r"\b(mail|PHPMailer)\s*\(", re.IGNORECASE)
 _SELECT = re.compile(r"\b(?:FROM|JOIN)\s+([`\"']?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?[`\"']?)", re.IGNORECASE)
@@ -51,6 +73,51 @@ _INSERT = re.compile(r"\bINSERT\s+INTO\s+([`\"']?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Z
 _UPDATE = re.compile(r"\bUPDATE\s+([`\"']?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?[`\"']?)", re.IGNORECASE)
 _DELETE = re.compile(r"\bDELETE\s+FROM\s+([`\"']?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?[`\"']?)", re.IGNORECASE)
 _CALL = re.compile(r"\bCALL\s+([`\"']?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?[`\"']?)", re.IGNORECASE)
+_DYNAMIC_FUNCTION_CALL = re.compile(r"(?<!->)(?<!::)(?P<var>\$[A-Za-z_]\w*)\s*\(", re.IGNORECASE)
+_CALL_USER_FUNC = re.compile(r"\bcall_user_func(?:_array)?\s*\(", re.IGNORECASE)
+_DYNAMIC_METHOD_CALL = re.compile(r"->\s*(?P<method>\$[A-Za-z_]\w*)\s*\(", re.IGNORECASE)
+_DYNAMIC_CLASS = re.compile(r"\bnew\s+(?P<class>\$[A-Za-z_]\w*)", re.IGNORECASE)
+_SWITCH = re.compile(r"\bswitch\s*\(", re.IGNORECASE)
+_DYNAMIC_CALLBACK_ARG = re.compile(r"\barray_(?:map|filter|walk|reduce)\s*\([^;\n]*\$[A-Za-z_]\w*", re.IGNORECASE)
+_IGNORED_UNRESOLVED_CALLS = {
+    "apache_request_headers",
+    "array",
+    "array_key_exists",
+    "array_map",
+    "array_push",
+    "boolval",
+    "call_user_func",
+    "call_user_func_array",
+    "count",
+    "curl_close",
+    "curl_exec",
+    "curl_init",
+    "curl_setopt",
+    "curl_setopt_array",
+    "date",
+    "empty",
+    "explode",
+    "file_put_contents",
+    "floatval",
+    "fopen",
+    "implode",
+    "in_array",
+    "intval",
+    "isset",
+    "json_decode",
+    "json_encode",
+    "key",
+    "mail",
+    "md5",
+    "move_uploaded_file",
+    "preg_replace",
+    "round",
+    "soapclient",
+    "str_replace",
+    "strlen",
+    "trim",
+    "unlink",
+}
 
 
 @dataclass
@@ -70,6 +137,7 @@ class _Builder:
     data_access: list[dict[str, object]] = field(default_factory=list)
     consumed_claims: dict[str, dict[str, object]] = field(default_factory=dict)
     produced_claims: dict[str, dict[str, object]] = field(default_factory=dict)
+    request_fields: dict[str, dict[str, object]] = field(default_factory=dict)
     local_calls: list[dict[str, object]] = field(default_factory=list)
     outbound: list[dict[str, object]] = field(default_factory=list)
     conditions: list[dict[str, object]] = field(default_factory=list)
@@ -93,6 +161,31 @@ def _safe_evidence(evidence: Evidence) -> dict[str, object]:
     if evidence.note is not None:
         payload["note"] = evidence.note
     return payload
+
+
+def _mask_strings(text: str) -> str:
+    chars = list(text)
+    i = 0
+    while i < len(chars):
+        quote = chars[i]
+        if quote not in {"'", '"'}:
+            i += 1
+            continue
+        i += 1
+        while i < len(chars):
+            if chars[i] == "\\":
+                chars[i] = " "
+                if i + 1 < len(chars):
+                    chars[i + 1] = " "
+                i += 2
+                continue
+            if chars[i] == quote:
+                i += 1
+                break
+            if chars[i] != "\n":
+                chars[i] = " "
+            i += 1
+    return "".join(chars)
 
 
 def _ctx(source: _RouteSource | _FunctionSource) -> _Context:
@@ -124,11 +217,26 @@ def _literal(expr: str, field_vars: dict[str, str]) -> tuple[str, list[str], boo
 
 def _field_vars(body: str) -> dict[str, str]:
     roots = {match.group("var") for match in _REQUEST_ROOT.finditer(body)}
+    roots.update(match.group("var") for match in _PARSED_BODY_ROOT.finditer(body))
     return {
         match.group("var"): match.group("field")
         for match in _REQUEST_FIELD_ASSIGN.finditer(body)
         if match.group("root") in roots
     }
+
+
+def _record_request_fields(builder: _Builder, ctx: _Context) -> None:
+    roots = {match.group("var") for match in _REQUEST_ROOT.finditer(ctx.body)}
+    roots.update(match.group("var") for match in _PARSED_BODY_ROOT.finditer(ctx.body))
+    for match in _REQUEST_FIELD_ASSIGN.finditer(ctx.body):
+        if match.group("root") not in roots:
+            continue
+        field = match.group("field")
+        builder.request_fields[field] = {
+            "name": field,
+            "variable": match.group("var"),
+            "evidence": [_safe_evidence(_ev(builder.repository, ctx, match.start(), "request field assigned to local variable"))],
+        }
 
 
 def _php_statements(body: str) -> list[str]:
@@ -163,7 +271,7 @@ def _sql_vars(body: str) -> dict[str, tuple[str, list[str], bool]]:
     for statement in _php_statements(body):
         match = _SQL_ASSIGN.search(statement)
         if match is not None:
-            if _SQL_KEYWORD.search(statement) is None:
+            if _SQL_FRAGMENT_KEYWORD.search(statement) is None:
                 continue
             reassigned_append = re.match(
                 rf"\s*{re.escape(match.group('var'))}\s*\.\s*(?P<tail>.+)\s*$",
@@ -187,7 +295,7 @@ def _sql_vars(body: str) -> dict[str, tuple[str, list[str], bool]]:
         match = _SQL_APPEND.search(statement)
         if match is None:
             continue
-        if _SQL_KEYWORD.search(statement) is None:
+        if match.group("var") not in values and _SQL_FRAGMENT_KEYWORD.search(statement) is None:
             continue
         literal, fields, dynamic = _literal(match.group("expr"), field_vars)
         if literal:
@@ -204,17 +312,25 @@ def _clean(raw: str) -> str:
     return raw.strip().strip("`\"'")
 
 
+def _complete_resource(raw: str) -> bool:
+    return bool(raw) and not raw.endswith(("_", "."))
+
+
 def _sql_targets(statement: str) -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     for match in _SELECT.finditer(statement):
         prefix = statement[max(0, match.start() - 32) : match.start()].upper()
         if any(marker in prefix for marker in ("LEADING", "TRAILING", "BOTH")):
             continue
-        result.append(("SELECT", _clean(match.group(1))))
+        resource = _clean(match.group(1))
+        if _complete_resource(resource):
+            result.append(("SELECT", resource))
     for regex, operation in ((_INSERT, "INSERT"), (_UPDATE, "UPDATE"), (_DELETE, "DELETE"), (_CALL, "CALL")):
         match = regex.search(statement)
         if match is not None:
-            result.append((operation, _clean(match.group(1))))
+            resource = _clean(match.group(1))
+            if _complete_resource(resource):
+                result.append((operation, resource))
     return result
 
 
@@ -341,35 +457,163 @@ def _conditions(body: str) -> list[tuple[str, str, int]]:
     return result
 
 
+def _response_field_bindings(body: str) -> dict[str, set[str]]:
+    bindings: dict[str, set[str]] = {}
+    for match in _RESPONSE_FIELD_BINDING.finditer(body):
+        bindings.setdefault(match.group("var"), set()).add(match.group("field"))
+    return bindings
+
+
 def _record_conditions(builder: _Builder, ctx: _Context) -> None:
+    response_bindings = _response_field_bindings(ctx.body)
     for condition, block, offset in _conditions(ctx.body):
-        fields = [{"field": match.group("field"), "expression": match.group("expr").strip()} for match in _BODY_FIELD.finditer(block)]
+        fields = [
+            {"field": match.group("field"), "expression": match.group("expr").strip()}
+            for match in _BODY_FIELD.finditer(block)
+        ]
+        for match in _VARIABLE_ASSIGNMENT.finditer(block):
+            variable = match.group("var")
+            for response_field in response_bindings.get(variable, set()):
+                if response_field not in {"codigo", "estado", "mensaje"}:
+                    continue
+                fields.append(
+                    {
+                        "field": response_field,
+                        "variable": variable,
+                        "expression": match.group("expr").strip(),
+                    }
+                )
         if fields:
             evidence = _ev(builder.repository, ctx, offset, "conditional response body fields")
             builder.conditions.append(
                 {
                     "id": _stable_id("sem-condition", builder.endpoint.endpoint_id, evidence.path, evidence.line, condition),
                     "condition": condition,
-                    "body_fields": sorted(fields, key=lambda item: str(item["field"])),
+                    "body_fields": sorted(
+                        fields,
+                        key=lambda item: (str(item["field"]), str(item.get("variable", "")), str(item["expression"])),
+                    ),
                     "evidence": [_safe_evidence(evidence)],
                 }
             )
 
 
+def _literal_vars(body: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for statement in _php_statements(body):
+        match = _LITERAL_ASSIGN.search(statement)
+        if match is None:
+            continue
+        value, _fields, dynamic = _literal(match.group("expr"), {})
+        if value and not dynamic:
+            values[match.group("var")] = value
+    return values
+
+
+def _call_args(body: str, start: int) -> list[str] | None:
+    open_at = body.find("(", start)
+    close_at = _matching_delimiter(body, open_at, "(", ")")
+    if close_at is None:
+        return None
+    return _split_top_level(body[open_at + 1 : close_at])
+
+
+def _bound_target(expr: str, variables: dict[str, str]) -> tuple[str | None, bool]:
+    stripped = expr.strip()
+    if stripped in variables:
+        return variables[stripped], False
+    literal, _fields, dynamic = _literal(stripped, {})
+    if literal and not dynamic:
+        return literal, False
+    return None, dynamic or bool(stripped)
+
+
+def _record_outbound_entry(
+    builder: _Builder,
+    evidence: Evidence,
+    kind: str,
+    target: str | None,
+    *,
+    operation: str | None = None,
+    unresolved_target: bool = False,
+) -> None:
+    entry = {
+        "id": _stable_id("sem-outbound", builder.endpoint.endpoint_id, kind, operation or "", target or "", evidence.path, evidence.line),
+        "type": kind,
+        "target": target,
+        "evidence": [_safe_evidence(evidence)],
+    }
+    if operation is not None:
+        entry["operation"] = operation
+    builder.outbound.append(entry)
+    builder.side_effects.append({**entry, "type": "outbound_integration", "integration_type": kind})
+    if unresolved_target:
+        _unresolved(
+            builder,
+            "slim_php_semantic_outbound_target_unresolved",
+            f"Outbound {kind} target could not be bound deterministically.",
+            evidence,
+        )
+
+
 def _record_outbound(builder: _Builder, ctx: _Context) -> None:
-    for regex, kind, note in ((_CURL, "http", "outbound HTTP client call"), (_SOAP, "soap", "SOAP client call")):
-        for match in regex.finditer(ctx.body):
-            evidence = _ev(builder.repository, ctx, match.start(), note)
-            url_match = _HTTP_LITERAL.search(ctx.body[match.start() : match.start() + 500])
-            target = url_match.group("url") if url_match is not None else None
-            entry = {
-                "id": _stable_id("sem-outbound", builder.endpoint.endpoint_id, kind, evidence.path, evidence.line),
-                "type": kind,
-                "target": target,
-                "evidence": [_safe_evidence(evidence)],
-            }
-            builder.outbound.append(entry)
-            builder.side_effects.append({**entry, "type": "outbound_integration", "integration_type": kind})
+    variables = _literal_vars(ctx.body)
+    curl_targets: list[str | None] = []
+    for match in _CURL_INIT.finditer(ctx.body):
+        args = _call_args(ctx.body, match.start())
+        if not args:
+            continue
+        target, dynamic = _bound_target(args[0], variables)
+        evidence = _ev(builder.repository, ctx, match.start(), "curl_init outbound target")
+        _record_outbound_entry(builder, evidence, "http", target, unresolved_target=target is None and dynamic)
+        curl_targets.append(target)
+    for match in _CURL_SETOPT.finditer(ctx.body):
+        args = _call_args(ctx.body, match.start())
+        if args is None or len(args) < 3 or "CURLOPT_URL" not in args[1]:
+            continue
+        target, dynamic = _bound_target(args[2], variables)
+        evidence = _ev(builder.repository, ctx, match.start(), "CURLOPT_URL outbound target")
+        _record_outbound_entry(builder, evidence, "http", target, unresolved_target=target is None and dynamic)
+        curl_targets.append(target)
+    for match in _CURL_SETOPT_ARRAY.finditer(ctx.body):
+        args = _call_args(ctx.body, match.start())
+        if args is None or len(args) < 2 or "CURLOPT_URL" not in args[1]:
+            continue
+        option = re.search(r"CURLOPT_URL\s*=>\s*(?P<expr>[^,\]\)]+)", args[1], re.IGNORECASE | re.DOTALL)
+        if option is None:
+            evidence = _ev(builder.repository, ctx, match.start(), "CURLOPT_URL outbound target")
+            _record_outbound_entry(builder, evidence, "http", None, unresolved_target=True)
+            curl_targets.append(None)
+            continue
+        target, dynamic = _bound_target(option.group("expr"), variables)
+        evidence = _ev(builder.repository, ctx, match.start(), "CURLOPT_URL outbound target")
+        _record_outbound_entry(builder, evidence, "http", target, unresolved_target=target is None and dynamic)
+        curl_targets.append(target)
+    if not curl_targets:
+        for match in re.finditer(r"\bcurl_exec\s*\(", ctx.body, re.IGNORECASE):
+            evidence = _ev(builder.repository, ctx, match.start(), "curl_exec outbound call without bound target")
+            _record_outbound_entry(builder, evidence, "http", None, unresolved_target=True)
+    soap_targets: list[str | None] = []
+    for match in _SOAP_CLIENT.finditer(ctx.body):
+        args = _call_args(ctx.body, match.start())
+        if not args:
+            continue
+        target, dynamic = _bound_target(args[0], variables)
+        evidence = _ev(builder.repository, ctx, match.start(), "SOAP client target")
+        _record_outbound_entry(builder, evidence, "soap", target, unresolved_target=target is None and dynamic)
+        soap_targets.append(target)
+    for match in _SOAP_CALL.finditer(ctx.body):
+        args = _call_args(ctx.body, match.start())
+        operation, dynamic = (None, True) if not args else _bound_target(args[0], variables)
+        evidence = _ev(builder.repository, ctx, match.start(), "SOAP operation call")
+        _record_outbound_entry(
+            builder,
+            evidence,
+            "soap",
+            soap_targets[-1] if soap_targets else None,
+            operation=operation,
+            unresolved_target=(not soap_targets and dynamic),
+        )
     for regex, kind, note in ((_FILE, "file", "file side effect"), (_MAIL, "mail", "mail side effect")):
         for match in regex.finditer(ctx.body):
             evidence = _ev(builder.repository, ctx, match.start(), note)
@@ -398,17 +642,80 @@ def _record_discovery_integrations(builder: _Builder, integrations: list[Integra
                 )
 
 
+def _record_coverage_blockers(
+    builder: _Builder,
+    ctx: _Context,
+    functions: dict[str, list[_FunctionSource]],
+) -> None:
+    masked_body = _mask_strings(ctx.body)
+    for match in _DYNAMIC_FUNCTION_CALL.finditer(masked_body):
+        _unresolved(
+            builder,
+            "slim_php_semantic_dynamic_function_call",
+            "Dynamic function call cannot be propagated deterministically.",
+            _ev(builder.repository, ctx, match.start(), "dynamic function call"),
+        )
+    for regex, code, message, note in (
+        (
+            _CALL_USER_FUNC,
+            "slim_php_semantic_dynamic_callback",
+            "Dynamic callback invocation cannot be propagated deterministically.",
+            "dynamic callback invocation",
+        ),
+        (
+            _DYNAMIC_METHOD_CALL,
+            "slim_php_semantic_dynamic_method_call",
+            "Dynamic method call cannot be propagated deterministically.",
+            "dynamic method call",
+        ),
+        (
+            _DYNAMIC_CLASS,
+            "slim_php_semantic_dynamic_class",
+            "Dynamic class construction cannot be propagated deterministically.",
+            "dynamic class construction",
+        ),
+        (
+            _SWITCH,
+            "slim_php_semantic_switch_control_flow",
+            "Switch control flow is material and not yet semantically reconstructed.",
+            "unsupported switch control flow",
+        ),
+        (
+            _DYNAMIC_CALLBACK_ARG,
+            "slim_php_semantic_dynamic_callback",
+            "Dynamic callback argument cannot be propagated deterministically.",
+            "dynamic callback argument",
+        ),
+    ):
+        for match in regex.finditer(masked_body):
+            _unresolved(builder, code, message, _ev(builder.repository, ctx, match.start(), note))
+
+    for name, _args, offset in _function_calls(masked_body):
+        lowered = name.lower()
+        if lowered in _IGNORED_UNRESOLVED_CALLS or name in functions:
+            continue
+        _unresolved(
+            builder,
+            "slim_php_semantic_unpropagated_function_call",
+            f"Function call {name} has no unique local definition and was not propagated.",
+            _ev(builder.repository, ctx, offset, "unpropagated function call"),
+        )
+
+
 def _analyze(builder: _Builder, ctx: _Context, functions: dict[str, list[_FunctionSource]], stack: tuple[str, ...]) -> None:
+    masked_body = _mask_strings(ctx.body)
+    _record_request_fields(builder, ctx)
     _record_sql(builder, ctx)
     _record_jwt(builder, ctx)
     _record_conditions(builder, ctx)
     for match in _WITH_STATUS.finditer(ctx.body):
         builder.http_status_codes.add(int(match.group("status")))
     _record_outbound(builder, ctx)
+    _record_coverage_blockers(builder, ctx, functions)
     if len(stack) >= 4:
         _unresolved(builder, "slim_php_semantic_helper_depth_limit", "Local helper propagation reached the deterministic depth limit.", _ev(builder.repository, ctx, 0, "helper propagation depth limit"))
         return
-    for name, _args, offset in _function_calls(ctx.body):
+    for name, _args, offset in _function_calls(masked_body):
         definitions = functions.get(name, [])
         if not definitions:
             continue
@@ -465,7 +772,17 @@ def _behavior(builder: _Builder) -> tuple[dict[str, object], list[SemanticUnreso
     unresolved = _dedupe_unresolved(builder.unresolved)
     reads = sorted({str(item["resource"]) for item in data_access if item.get("operation") == "SELECT"})
     writes = sorted({str(item["resource"]) for item in data_access if item.get("operation") in {"INSERT", "UPDATE", "DELETE", "CALL"}})
-    facts = bool(data_access or outbound or side_effects or local_calls or conditions or builder.consumed_claims or builder.produced_claims)
+    request_fields = sorted(builder.request_fields.values(), key=lambda item: str(item["name"]))
+    facts = bool(
+        data_access
+        or outbound
+        or side_effects
+        or local_calls
+        or conditions
+        or request_fields
+        or builder.consumed_claims
+        or builder.produced_claims
+    )
     if unresolved:
         status = "partial" if facts else "unresolved"
     elif facts:
@@ -482,6 +799,7 @@ def _behavior(builder: _Builder) -> tuple[dict[str, object], list[SemanticUnreso
         "summary": _summary(builder.endpoint, reads, writes, outbound, status),
         "source_module": relative_path(builder.repository, builder.source.file),
         "tags": [f"module:{builder.source.file.stem}"],
+        "request_fields": request_fields,
         "data_access": data_access,
         "auth_context": {
             "consumed_jwt_claims": sorted(builder.consumed_claims.values(), key=lambda item: str(item["claim"])),
@@ -536,6 +854,7 @@ def enrich_slim_php_semantics(
                 "summary": f"{endpoint.method} {endpoint.path} semantic source unresolved",
                 "source_module": None,
                 "tags": ["module:unknown"],
+                "request_fields": [],
                 "data_access": [],
                 "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []},
                 "local_calls": [],

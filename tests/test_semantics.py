@@ -53,17 +53,22 @@ function persistDetails($conexion, $idpedido) {
 }
 
 $app->post('/login', function($request, $response, $args) use ($conexion) {
-    $params = json_decode((string) $request->getBody(), true);
-    $username = $params['username'];
-    $contrasena = $params['contrasena'];
+    $body = $request->getParsedBody();
+    $username = $body['username'] ?? null;
+    $contrasena = $body['contrasena'] ?? null;
+    $codigo = 0;
+    $status = 'Error';
+    $mensaje = '';
     $query = "SELECT * FROM t_usuario u JOIN t_empresa e ON e.idempresa = u.idempresa WHERE u.username = '".$username."'";
     $conexion->query($query);
     if ($usuario_inactivo) {
-        $resultado = array('codigo' => 400, 'estado' => 'Error', 'mensaje' => 'Usuario inactivo');
+        $codigo = 400;
+        $status = 'Error';
+        $mensaje = 'Usuario inactivo';
     }
     $payload = array('idusuario' => $idusuario, 'idempresa' => $idempresa, 'perfil' => $perfil);
     $token = JWT::encode($payload, jwt_key, 'HS256');
-    $response->getBody()->write(json_encode(array('estado' => 'Exito', 'codigo' => 200, 'mensaje' => 'OK', 'usuario' => $usuario, 'token' => $token, 'cambiocontrasena' => false)));
+    $response->getBody()->write(json_encode(array('estado' => $status, 'codigo' => $codigo, 'mensaje' => $mensaje, 'usuario' => $usuario, 'token' => $token, 'cambiocontrasena' => false)));
     return $response->withHeader('Content-Type', 'application/json');
 });
 
@@ -78,11 +83,17 @@ $app->post('/agruparpedidos', function($request, $response, $args) use ($conexio
     $idalmacen = $decoded['idalmacen'];
     $idusuario = $decoded['idusuario'];
     $conexion->query("SELECT * FROM t_cliente WHERE idcliente = ".$idcliente);
-    $conexion->query("SELECT TRIM(LEADING '0' FROM t_pedidodetalle.codigo) as codigo FROM t_pedido p JOIN t_pedidodetalle d ON d.idpedido = p.idpedido");
-    $conexion->exec("INSERT INTO t_pedido (idcliente, fecha_entrega) VALUES ($idcliente, '$fecha_entrega')");
+    $query = "INSERT INTO t_pedido (idcliente, fecha_entrega) VALUES ($idcliente, '$fecha_entrega');";
+    $query = $query."INSERT INTO t_pedidotienda (idpedido) SELECT idpedido FROM t_pedido;";
+    $query .= "INSERT INTO t_pediodetalletienda (idpedido) SELECT idpedido FROM t_pedidotienda;";
+    $query .= "SELECT TRIM(LEADING '0' FROM t_pedidodetalle.codigo) as codigo";
+    $query .= " FROM t_pedido p JOIN t_pedidodetalle d ON d.idpedido = p.idpedido";
+    $conexion->exec($query);
     persistDetails($conexion, $idpedido);
     if (!$cliente) {
-        $resultado = array('codigo' => 400, 'estado' => 'Error', 'mensaje' => 'Cliente no encontrado');
+        $codigo = 400;
+        $status = 'Error';
+        $mensaje = 'Cliente no encontrado';
     }
     $response->getBody()->write(json_encode(array('codigo' => $codigo, 'estado' => $status, 'mensaje' => $mensaje, 'idpedido' => $idpedido, 'numero_pedido' => $numero)));
     return $response->withHeader('Content-Type', 'application/json');
@@ -127,15 +138,35 @@ $app->put('/inventario/mailvencimiento/{idalmacen}', function($request, $respons
             self.assertNotIn(("SELECT", "t_pedidodetalle.codigo"), resources)
             self.assertIn(("INSERT", "t_pedido"), resources)
             self.assertIn(("INSERT", "t_pedidodetalle"), resources)
+            self.assertIn(("INSERT", "t_pedidotienda"), resources)
+            self.assertIn(("INSERT", "t_pediodetalletienda"), resources)
             self.assertIn(("UPDATE", "t_pedido"), resources)
             self.assertEqual({item["claim"] for item in behavior["auth_context"]["consumed_jwt_claims"]}, {"idalmacen", "idusuario"})
             self.assertEqual(behavior["response_semantics"]["http_status_codes"], [])
             self.assertIn("codigo", behavior["response_semantics"]["functional_body_fields"])
+            self.assertIn("idcliente", {item["name"] for item in behavior["request_fields"]})
+            agrupar_outcomes = {
+                (field["field"], field["expression"])
+                for condition in behavior["conditions"]
+                for field in condition["body_fields"]
+            }
+            self.assertIn(("codigo", "400"), agrupar_outcomes)
+            self.assertIn(("estado", "'Error'"), agrupar_outcomes)
+            self.assertIn(("mensaje", "'Cliente no encontrado'"), agrupar_outcomes)
 
             login = _endpoint(findings, "POST", "/login")["behavior"]
+            self.assertEqual({item["name"] for item in login["request_fields"]}, {"username", "contrasena"})
             self.assertEqual({item["claim"] for item in login["auth_context"]["produced_jwt_claims"]}, {"idusuario", "idempresa", "perfil"})
             self.assertEqual(login["response_semantics"]["http_status_codes"], [])
             self.assertIn("codigo", login["response_semantics"]["functional_body_fields"])
+            login_outcomes = {
+                (field["field"], field["expression"])
+                for condition in login["conditions"]
+                for field in condition["body_fields"]
+            }
+            self.assertIn(("codigo", "400"), login_outcomes)
+            self.assertIn(("estado", "'Error'"), login_outcomes)
+            self.assertIn(("mensaje", "'Usuario inactivo'"), login_outcomes)
 
             simple_get = _endpoint(findings, "GET", "/clientes/{idcliente}")["behavior"]
             self.assertEqual(simple_get["response_semantics"]["http_status_codes"], [202])
@@ -169,6 +200,138 @@ $app->get('/dynamic', function($request, $response, $args) use ($conexion) {
             codes = {item["code"] for item in behavior["unresolved"]}
             self.assertIn("slim_php_semantic_sql_target_unresolved", codes)
             self.assertIn("slim_php_semantic_helper_cycle", codes)
+
+    def test_concatenated_join_from_fragments_are_reconstructed(self) -> None:
+        routes = """<?php
+$app->get('/fragments', function($request, $response, $args) use ($conexion) {
+    $sql = "SELECT t_a.id, IFNULL(t_a.name, '') AS name";
+    $sql .= " FROM t_a";
+    $sql .= " JOIN t_b ON t_b.id = t_a.id";
+    $conexion->query($sql);
+    return $response;
+});
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            behavior = _endpoint(_audit(_repo(root, routes), root / "out"), "GET", "/fragments")["behavior"]
+            resources = {(item["operation"], item["resource"]) for item in behavior["data_access"]}
+            self.assertIn(("SELECT", "t_a"), resources)
+            self.assertIn(("SELECT", "t_b"), resources)
+            self.assertNotIn(
+                "slim_php_semantic_unpropagated_function_call",
+                {item["code"] for item in behavior["unresolved"]},
+            )
+
+    def test_dynamic_table_prefix_suffix_does_not_record_prefix_as_resource(self) -> None:
+        routes = """<?php
+$app->get('/dynamic-table', function($request, $response, $args) use ($conexion) {
+    $suffix = $args['suffix'];
+    $sql = "SELECT * FROM t_" . $suffix;
+    $conexion->query($sql);
+    return $response;
+});
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            behavior = _endpoint(_audit(_repo(root, routes), root / "out"), "GET", "/dynamic-table")["behavior"]
+            self.assertNotIn(("SELECT", "t_"), {(item["operation"], item["resource"]) for item in behavior["data_access"]})
+            self.assertIn(
+                "slim_php_semantic_sql_target_unresolved",
+                {item["code"] for item in behavior["unresolved"]},
+            )
+            self.assertEqual(behavior["semantic_status"], "unresolved")
+
+    def test_dynamic_callback_forces_partial(self) -> None:
+        routes = """<?php
+$app->post('/callback', function($request, $response, $args) use ($conexion) {
+    $conexion->query("SELECT * FROM t_callback");
+    $callback = $args['handler'];
+    call_user_func($callback, $response);
+    return $response;
+});
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            behavior = _endpoint(_audit(_repo(root, routes), root / "out"), "POST", "/callback")["behavior"]
+            self.assertEqual(behavior["semantic_status"], "partial")
+            self.assertIn(
+                "slim_php_semantic_dynamic_callback",
+                {item["code"] for item in behavior["unresolved"]},
+            )
+
+    def test_outbound_url_is_not_bound_by_proximity(self) -> None:
+        routes = """<?php
+$app->post('/outbound', function($request, $response, $args) use ($conexion) {
+    $curl = curl_init();
+    $nearby = "https://not-bound.example/api";
+    curl_exec($curl);
+    return $response;
+});
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            behavior = _endpoint(_audit(_repo(root, routes), root / "out"), "POST", "/outbound")["behavior"]
+            self.assertEqual({item["target"] for item in behavior["outbound_integrations"]}, {None})
+            self.assertIn(
+                "slim_php_semantic_outbound_target_unresolved",
+                {item["code"] for item in behavior["unresolved"]},
+            )
+
+    def test_stable_semantic_ids_and_order_across_repeated_runs(self) -> None:
+        routes = """<?php
+$app->get('/stable', function($request, $response, $args) use ($conexion) {
+    $conexion->query("SELECT * FROM t_stable JOIN t_other ON t_other.id = t_stable.id");
+    return $response;
+});
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root, routes)
+            first = _endpoint(_audit(repo, root / "out1"), "GET", "/stable")["behavior"]
+            second = _endpoint(_audit(repo, root / "out2"), "GET", "/stable")["behavior"]
+            self.assertEqual(first["data_access"], second["data_access"])
+            self.assertEqual([item["id"] for item in first["data_access"]], sorted(item["id"] for item in first["data_access"]))
+
+    def test_api_knowledge_and_openapi_render_semantic_details_and_outcomes(self) -> None:
+        routes = """<?php
+$app->post('/render', function($request, $response, $args) use ($conexion) {
+    $body = $request->getParsedBody();
+    $name = $body['name'] ?? null;
+    $codigo = 0;
+    $status = 'Error';
+    $mensaje = '';
+    $conexion->exec("UPDATE t_render SET name = '".$name."'");
+    if (!$name) {
+        $codigo = 400;
+        $status = 'Error';
+        $mensaje = 'Missing name';
+    }
+    $response->getBody()->write(json_encode(array('codigo' => $codigo, 'estado' => $status, 'mensaje' => $mensaje)));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root, routes)
+            _audit(repo, root / "out")
+            knowledge = (root / "out" / "api-knowledge.md").read_text(encoding="utf-8")
+            openapi = (root / "out" / "openapi.yaml").read_text(encoding="utf-8")
+            for expected in (
+                "Request fields",
+                "`name` via `$name`",
+                "Data written",
+                "UPDATE t_render",
+                "Auth context",
+                "Local calls",
+                "Outbound",
+                "Side effects",
+                "Unresolved",
+                "Evidence",
+            ):
+                self.assertIn(expected, knowledge)
+            self.assertIn("!$name -> codigo=400", openapi)
+            self.assertIn("estado='Error'", openapi)
+            self.assertIn("mensaje='Missing name'", openapi)
 
     def test_installed_wheel_uses_packaged_schemas_from_directory_without_schemas(self) -> None:
         routes = """<?php

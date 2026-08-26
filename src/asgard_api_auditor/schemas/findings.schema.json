@@ -198,6 +198,7 @@
             "required": ["field", "expression"],
             "properties": {
               "field": {"type": "string", "minLength": 1},
+              "variable": {"type": ["string", "null"]},
               "expression": {"type": "string", "minLength": 1}
             },
             "additionalProperties": false
@@ -217,9 +218,19 @@
       },
       "additionalProperties": false
     },
+    "semanticRequestField": {
+      "type": "object",
+      "required": ["name", "variable", "evidence"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "variable": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
     "semanticBehavior": {
       "type": "object",
-      "required": ["schema_version", "semantic_status", "confidence", "summary", "tags", "data_access", "auth_context", "local_calls", "outbound_integrations", "conditions", "response_semantics", "side_effects", "unresolved", "evidence"],
+      "required": ["schema_version", "semantic_status", "confidence", "summary", "tags", "request_fields", "data_access", "auth_context", "local_calls", "outbound_integrations", "conditions", "response_semantics", "side_effects", "unresolved", "evidence"],
       "properties": {
         "schema_version": {"const": "1.0"},
         "semantic_status": {"enum": ["complete", "partial", "unresolved"]},
@@ -227,6 +238,7 @@
         "summary": {"type": "string", "minLength": 1},
         "source_module": {"type": ["string", "null"]},
         "tags": {"type": "array", "items": {"type": "string"}},
+        "request_fields": {"type": "array", "items": {"$ref": "#/$defs/semanticRequestField"}},
         "data_access": {"type": "array", "items": {"$ref": "#/$defs/semanticFact"}},
         "auth_context": {
           "type": "object",

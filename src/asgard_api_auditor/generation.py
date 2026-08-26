@@ -256,6 +256,7 @@ def _behavior_lines(endpoint: EndpointFinding) -> list[str]:
             "- Unresolved: semantic behavior was not reconstructed.",
         ]
     data_access = behavior.get("data_access") if isinstance(behavior.get("data_access"), list) else []
+    request_fields = behavior.get("request_fields") if isinstance(behavior.get("request_fields"), list) else []
     reads = sorted({str(item.get("resource")) for item in data_access if isinstance(item, dict) and item.get("operation") == "SELECT"})
     writes = sorted(
         {
@@ -276,7 +277,13 @@ def _behavior_lines(endpoint: EndpointFinding) -> list[str]:
         "Behavior",
         "",
         f"- Semantic status: {behavior.get('semantic_status', 'unresolved')}",
+        f"- Summary: {_behavior_summary(endpoint)}",
         f"- Source module: {behavior.get('source_module', 'unknown')}",
+        "",
+        "Request fields",
+        "",
+        *(f"- `{item.get('name')}` via `{item.get('variable')}`" for item in request_fields if isinstance(item, dict)),
+        *(["- n/a"] if not request_fields else []),
         "",
         "Data read",
         "",
@@ -303,8 +310,27 @@ def _behavior_lines(endpoint: EndpointFinding) -> list[str]:
         "",
         "Conditions",
         "",
-        *(f"- {item.get('condition')}" for item in conditions if isinstance(item, dict)),
+        *(
+            "- "
+            + str(item.get("condition"))
+            + " -> "
+            + (
+                ", ".join(
+                    f"{field.get('field')}={field.get('expression')}"
+                    for field in item.get("body_fields", [])
+                    if isinstance(field, dict)
+                )
+                or "outcome unresolved"
+            )
+            for item in conditions
+            if isinstance(item, dict)
+        ),
         *(["- n/a"] if not conditions else []),
+        "",
+        "Local calls",
+        "",
+        *(f"- {item.get('name')}" for item in behavior.get("local_calls", []) if isinstance(item, dict)),
+        *(["- n/a"] if not behavior.get("local_calls") else []),
         "",
         "Outbound",
         "",
@@ -320,6 +346,15 @@ def _behavior_lines(endpoint: EndpointFinding) -> list[str]:
         "",
         *(f"- {item.get('code')}: {item.get('message')}" for item in unresolved if isinstance(item, dict)),
         *(["- n/a"] if not unresolved else []),
+        "",
+        "Evidence",
+        "",
+        *(
+            f"- {item.get('path')}:{item.get('line') or '?'} {item.get('note') or ''}".rstrip()
+            for item in behavior.get("evidence", [])
+            if isinstance(item, dict)
+        ),
+        *(["- n/a"] if not behavior.get("evidence") else []),
     ]
     return lines
 
@@ -370,6 +405,8 @@ def _render_knowledge(
                 f"- Request fields: {_render_fields(item.request.body_schema if item.request else None)}",
                 f"- Response fields: {_render_fields(item.response.schema if item.response else None)}",
                 f"- Authentication: `{item.authentication or 'unknown'}`",
+                "",
+                *_behavior_lines(item),
                 "",
             ]
         )
