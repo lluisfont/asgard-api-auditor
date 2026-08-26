@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.3 - 2026-08-26
+
+### Added
+
+- Deterministic PHP request reconstruction now supports unused `json_decode` filtering, top-level JSON arrays, scalar lists, array-of-object access, element aliases, `foreach` aliases, bounded nested array/object access and limited unique local positional propagation.
+- Multipart request reconstruction now supports literal `$_POST[...]` fields and `$_FILES[...]` uploads.
+
+### Changed
+
+- Request applicability is calculated from demonstrated request-body usage rather than from every body `json_decode`.
+- Dynamic request keys remain fail-closed, while dynamic outer indices with literal object keys can now be reconstructed.
+- Audit status remains `partial` behind an explicit v0.5.3 coverage gate until SOAP and later provider/consumer completion gates are closed.
+
 ## 0.5.2 - 2026-08-26
 
 ### Added
