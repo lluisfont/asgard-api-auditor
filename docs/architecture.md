@@ -97,7 +97,9 @@ Each detector must declare:
 
 Provider-consumer correlation is generated from versioned `findings.json` artifacts, not by coupling scanners across repositories.
 
-The v0.6.0 relationship layer uses exact HTTP method plus normalized path shape. It normalizes only route parameter names and deliberately avoids fuzzy matching, host substring matching, repository-name heuristics and manual mandatory mappings.
+The v0.6.0 relationship layer remains compatible in v0.7.0 and uses exact HTTP method plus normalized path shape. It normalizes only route parameter names and deliberately avoids fuzzy matching, host substring matching, repository-name heuristics and manual mandatory mappings.
+
+v0.7.0 adds deterministic semantic reconstruction after contract enrichment and before findings/OpenAPI/knowledge/report rendering. The semantic layer records source-proven facts only, keeps SOAP separate from REST, separates consumed JWT claims from produced JWT claims, and keeps functional body fields such as `codigo`, `estado` and `mensaje` distinct from real HTTP status codes.
 
 One unique shape match is a deterministic candidate, not a confirmed runtime dependency. A match becomes confirmed only when the consumer artifact already contains explicit provider identity evidence.
 

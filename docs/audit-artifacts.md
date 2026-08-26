@@ -31,7 +31,7 @@ The OpenAPI document contains only HTTP endpoints proven as `exposed` by discove
 
 Consumed calls are not emitted as provider paths. SOAP operations are not converted to REST paths.
 
-v0.6.0 enriches Slim/PHP route contracts only when source reconstruction can prove the data. Request bodies, response schemas, authentication and authorization are not invented. Generated operations include ASGARD traceability extensions, canonical path mapping and conservative defaults where details remain unknown.
+v0.7.0 enriches Slim/PHP route contracts and deterministic semantics only when source reconstruction can prove the data. Request bodies, response schemas, authentication, authorization and behavior are not invented. Generated operations include ASGARD traceability extensions, canonical path mapping, `x-asgard-behavior` and conservative unresolved markers where details remain unknown.
 
 Supported Slim/PHP enrichment patterns in v0.6.0:
 
@@ -63,9 +63,9 @@ The Markdown knowledge artifact includes:
 
 ### Findings
 
-`findings.json` maps discovery evidence into the versioned findings contract, includes `coverage.contract_enrichment` counters and adds a blocking `contract-enrichment-v0.6.0-coverage-gate` unresolved item until all completion gates are explicitly satisfied.
+`findings.json` maps discovery evidence into the versioned findings contract, includes `coverage.contract_enrichment` and `coverage.semantic_enrichment` counters, stores endpoint `behavior`, and adds a blocking `contract-enrichment-v0.7.0-coverage-gate` unresolved item until all completion gates are explicitly satisfied.
 
-Therefore v0.6.0 audit status is `partial` even when `discovery_complete=true`.
+Therefore v0.7.0 audit status is `partial` even when `discovery_complete=true`.
 
 ### Correlation artifacts
 
