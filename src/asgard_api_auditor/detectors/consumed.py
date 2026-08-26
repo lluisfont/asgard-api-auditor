@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..discovery_types import DiscoveryIssue
-from ..discovery_utils import line_number, normalize_literal_url, read_source, relative_path
+from ..discovery_utils import line_number, mask_c_like_comments, normalize_literal_url, read_source, relative_path
 from ..models import DetectorCoverage, EndpointFinding, Evidence
 
 _SUPPORTED = {
@@ -21,6 +21,15 @@ _SUPPORTED = {
     "php-curl",
 }
 _METHODS = "get|post|put|patch|delete|head|options"
+
+
+def _mask_consumer_comments(path: Path, text: str) -> str:
+    suffix = path.suffix.lower()
+    return mask_c_like_comments(
+        text,
+        hash_comments=suffix == ".php",
+        html_comments=suffix == ".vue",
+    )
 
 
 def _evidence(repository: Path, path: Path, text: str, offset: int, note: str) -> Evidence:
@@ -90,11 +99,14 @@ def _axios(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], 
         if path.suffix.lower() not in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue"}:
             continue
         text = read_source(path)
-        if text is None or "axios" not in text:
+        if text is None:
+            continue
+        masked = _mask_consumer_comments(path, text)
+        if "axios" not in masked:
             continue
         scanned += 1
         names = {"axios"}
-        names.update(re.findall(r"\b(?:const|let|var)\s+(\w+)\s*=\s*axios\.create\s*\(", text))
+        names.update(re.findall(r"\b(?:const|let|var)\s+(\w+)\s*=\s*axios\.create\s*\(", masked))
         name_pattern = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
         literal = re.compile(
             rf"\b(?P<object>{name_pattern})\.(?P<method>{_METHODS})\s*\(\s*"
@@ -103,7 +115,7 @@ def _axios(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], 
         )
         any_call = re.compile(rf"\b(?:{name_pattern})\.(?:{_METHODS})\s*\(", re.IGNORECASE)
         recognized = set()
-        for match in literal.finditer(text):
+        for match in literal.finditer(masked):
             recognized.add(match.start())
             endpoints.append(
                 _finding(
@@ -111,7 +123,7 @@ def _axios(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], 
                     match.group("url"), "axios"
                 )
             )
-        for call in any_call.finditer(text):
+        for call in any_call.finditer(masked):
             if call.start() not in recognized:
                 issues.append(
                     DiscoveryIssue(
@@ -125,7 +137,7 @@ def _axios(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], 
             (r"\baxios\.request\s*\(", "axios_request_config_unsupported"),
             (r"\baxios\s*\(\s*\{", "axios_callable_config_unsupported"),
         ):
-            for match in re.finditer(pattern, text):
+            for match in re.finditer(pattern, masked):
                 issues.append(
                     DiscoveryIssue(
                         code=code,
@@ -156,31 +168,34 @@ def _fetch(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], 
         if path.suffix.lower() not in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue"}:
             continue
         text = read_source(path)
-        if text is None or "fetch" not in text:
+        if text is None:
+            continue
+        masked = _mask_consumer_comments(path, text)
+        if "fetch" not in masked:
             continue
         scanned += 1
         property_literals: dict[str, tuple[str, int]] = {}
         for assignment in re.finditer(
             r"\bthis\.(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<quote>['\"`])(?P<value>.*?)(?P=quote)",
-            text,
+            masked,
             re.DOTALL,
         ):
             property_literals[assignment.group("name")] = (assignment.group("value"), assignment.start())
         for field in re.finditer(
             r"\b(?:(?:private|public|protected|readonly|static)\s+)*"
             r"(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<quote>['\"`])(?P<value>.*?)(?P=quote)",
-            text,
+            masked,
             re.DOTALL,
         ):
             property_literals.setdefault(field.group("name"), (field.group("value"), field.start()))
         recognized = set()
-        for match in literal.finditer(text):
+        for match in literal.finditer(masked):
             recognized.add(match.start())
             method = _method_from_options(match.group("options") or "")
             endpoints.append(
                 _finding(repository, path, text, match.start(), method, match.group("url"), "fetch")
             )
-        for match in this_property.finditer(text):
+        for match in this_property.finditer(masked):
             property_name = match.group("property")
             resolved = property_literals.get(property_name)
             if resolved is None:
@@ -201,7 +216,7 @@ def _fetch(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], 
                     ),
                 )
             )
-        for call in any_call.finditer(text):
+        for call in any_call.finditer(masked):
             if call.start() not in recognized:
                 issues.append(
                     DiscoveryIssue(
@@ -224,13 +239,14 @@ def _guzzle(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding],
         text = read_source(path)
         if text is None:
             continue
-        if not re.search(r"GuzzleHttp|new\s+Client\s*\(|->request\s*\(", text):
+        masked = _mask_consumer_comments(path, text)
+        if not re.search(r"GuzzleHttp|new\s+Client\s*\(|->request\s*\(", masked):
             continue
         scanned += 1
         variables = set(
             re.findall(
                 r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*new\s+(?:\\?GuzzleHttp\\Client|Client)\s*\(",
-                text,
+                masked,
             )
         )
         request_literal = re.compile(
@@ -239,7 +255,7 @@ def _guzzle(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding],
             r"(?P<uq>['\"])(?P<url>.*?)(?P=uq)",
             re.IGNORECASE | re.DOTALL,
         )
-        for match in request_literal.finditer(text):
+        for match in request_literal.finditer(masked):
             endpoints.append(
                 _finding(
                     repository, path, text, match.start(), match.group("method"), match.group("url"),
@@ -254,14 +270,14 @@ def _guzzle(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding],
             )
             any_call = re.compile(rf"{re.escape(variable)}->(?:{_METHODS})\s*\(", re.IGNORECASE)
             recognized = set()
-            for match in direct.finditer(text):
+            for match in direct.finditer(masked):
                 recognized.add(match.start())
                 endpoints.append(
                     _finding(
                         repository, path, text, match.start(), match.group("method"), match.group("url"), "guzzle"
                     )
                 )
-            for call in any_call.finditer(text):
+            for call in any_call.finditer(masked):
                 if call.start() not in recognized:
                     issues.append(
                         DiscoveryIssue(
@@ -287,16 +303,19 @@ def _laravel_http(repository: Path, files: list[Path]) -> tuple[list[EndpointFin
         if path.suffix.lower() != ".php":
             continue
         text = read_source(path)
-        if text is None or "Http::" not in text:
+        if text is None:
+            continue
+        masked = _mask_consumer_comments(path, text)
+        if "Http::" not in masked:
             continue
         scanned += 1
         recognized = set()
-        for match in literal.finditer(text):
+        for match in literal.finditer(masked):
             recognized.add(match.start())
             endpoints.append(
                 _finding(repository, path, text, match.start(), match.group("method"), match.group("url"), "laravel-http")
             )
-        for call in any_call.finditer(text):
+        for call in any_call.finditer(masked):
             if call.start() not in recognized:
                 issues.append(
                     DiscoveryIssue(
@@ -414,19 +433,25 @@ def _angular_httpclient(
         if path.suffix.lower() not in {".ts", ".tsx"}:
             continue
         text = read_source(path)
-        if text is not None and "GLOBAL" in text:
-            global_values.update(_angular_global_values(text))
+        if text is None:
+            continue
+        masked = _mask_consumer_comments(path, text)
+        if "GLOBAL" in masked:
+            global_values.update(_angular_global_values(masked))
 
     for path in files:
         if path.suffix.lower() not in {".ts", ".tsx"}:
             continue
         text = read_source(path)
-        if text is None or "HttpClient" not in text:
+        if text is None:
+            continue
+        masked = _mask_consumer_comments(path, text)
+        if "HttpClient" not in masked:
             continue
         clients = set(
             re.findall(
                 r"\b(?:private|public|protected|readonly|\s)+(?P<name>[A-Za-z_]\w*)\s*:\s*HttpClient\b",
-                text,
+                masked,
             )
         )
         clients.update({"http", "_http"})
@@ -440,10 +465,10 @@ def _angular_httpclient(
             rf"\bthis\.(?:{client_pattern})\.(?:get|post|put|delete|patch)\s*\(",
             re.IGNORECASE,
         )
-        values = _angular_this_values(text, {**global_values, **_angular_global_values(text)})
+        values = _angular_this_values(masked, {**global_values, **_angular_global_values(masked)})
         scanned += 1
         recognized: set[int] = set()
-        for match in calls.finditer(text):
+        for match in calls.finditer(masked):
             base_url, endpoint_path, assignment_offset = _resolve_angular_url(match.group("url"), values)
             if endpoint_path is None:
                 continue
@@ -467,7 +492,7 @@ def _angular_httpclient(
                     extra_evidence=extra_evidence,
                 )
             )
-        for call in any_call.finditer(text):
+        for call in any_call.finditer(masked):
             if call.start() not in recognized:
                 issues.append(
                     DiscoveryIssue(
@@ -488,10 +513,13 @@ def _dio(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], li
         if path.suffix.lower() != ".dart":
             continue
         text = read_source(path)
-        if text is None or "Dio" not in text:
+        if text is None:
+            continue
+        masked = _mask_consumer_comments(path, text)
+        if "Dio" not in masked:
             continue
         scanned += 1
-        names = set(re.findall(r"\b(?:final|var|late\s+final)\s+(\w+)\s*=\s*Dio\s*\(", text))
+        names = set(re.findall(r"\b(?:final|var|late\s+final)\s+(\w+)\s*=\s*Dio\s*\(", masked))
         patterns = [r"Dio\s*\(\s*\)"] + [re.escape(name) for name in names]
         object_pattern = "|".join(patterns)
         literal = re.compile(
@@ -501,12 +529,12 @@ def _dio(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], li
         )
         any_call = re.compile(rf"(?:{object_pattern})\.(?:{_METHODS})\s*\(", re.IGNORECASE)
         recognized = set()
-        for match in literal.finditer(text):
+        for match in literal.finditer(masked):
             recognized.add(match.start())
             endpoints.append(
                 _finding(repository, path, text, match.start(), match.group("method"), match.group("url"), "dio")
             )
-        for call in any_call.finditer(text):
+        for call in any_call.finditer(masked):
             if call.start() not in recognized:
                 issues.append(
                     DiscoveryIssue(
@@ -527,10 +555,13 @@ def _dart_http(repository: Path, files: list[Path]) -> tuple[list[EndpointFindin
         if path.suffix.lower() != ".dart":
             continue
         text = read_source(path)
-        if text is None or "package:http/" not in text:
+        if text is None:
+            continue
+        masked = _mask_consumer_comments(path, text)
+        if "package:http/" not in masked:
             continue
         scanned += 1
-        aliases = set(re.findall(r"import\s+['\"]package:http/http\.dart['\"]\s+as\s+(\w+)\s*;", text))
+        aliases = set(re.findall(r"import\s+['\"]package:http/http\.dart['\"]\s+as\s+(\w+)\s*;", masked))
         aliases.add("http")
         alias_pattern = "|".join(re.escape(alias) for alias in sorted(aliases))
         literal = re.compile(
@@ -540,12 +571,12 @@ def _dart_http(repository: Path, files: list[Path]) -> tuple[list[EndpointFindin
         )
         any_call = re.compile(rf"\b(?:{alias_pattern})\.(?:{_METHODS})\s*\(", re.IGNORECASE)
         recognized = set()
-        for match in literal.finditer(text):
+        for match in literal.finditer(masked):
             recognized.add(match.start())
             endpoints.append(
                 _finding(repository, path, text, match.start(), match.group("method"), match.group("url"), "dart-http")
             )
-        for call in any_call.finditer(text):
+        for call in any_call.finditer(masked):
             if call.start() not in recognized:
                 issues.append(
                     DiscoveryIssue(
@@ -1053,10 +1084,11 @@ def _php_wrapper_endpoints(
     repository: Path,
     path: Path,
     text: str,
+    masked: str,
 ) -> tuple[list[EndpointFinding], set[int]]:
     findings: dict[tuple[str, str, str], EndpointFinding] = {}
     resolved_curl_offsets: set[int] = set()
-    for php_class in _php_classes(text):
+    for php_class in _php_classes(masked):
         methods = php_class.methods
         for method in methods.values():
             caller_scope = _PhpScope(method, call_offset=method.body_start)
@@ -1108,15 +1140,18 @@ def _php_curl(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding
         if path.suffix.lower() != ".php":
             continue
         text = read_source(path)
-        if text is None or "curl_" not in text:
+        if text is None:
+            continue
+        masked = _mask_consumer_comments(path, text)
+        if "curl_" not in masked:
             continue
         scanned += 1
         handles: dict[str, dict[str, object]] = {}
-        wrapper_endpoints, resolved_curl_offsets = _php_wrapper_endpoints(repository, path, text)
+        wrapper_endpoints, resolved_curl_offsets = _php_wrapper_endpoints(repository, path, text, masked)
 
         for match in re.finditer(
             r"(?P<handle>\$[A-Za-z_]\w*)\s*=\s*curl_init\s*\(\s*(?P<url>[^)]*)\)",
-            text,
+            masked,
             re.DOTALL,
         ):
             handle = match.group("handle")
@@ -1129,7 +1164,7 @@ def _php_curl(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding
         for match in re.finditer(
             r"curl_setopt\s*\(\s*(?P<handle>\$[A-Za-z_]\w*)\s*,\s*"
             r"(?P<option>CURLOPT_[A-Z_]+)\s*,\s*(?P<value>.*?)\s*\)\s*;",
-            text,
+            masked,
             re.DOTALL,
         ):
             handle = match.group("handle")
@@ -1149,7 +1184,7 @@ def _php_curl(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding
         for match in re.finditer(
             r"curl_setopt_array\s*\(\s*(?P<handle>\$[A-Za-z_]\w*)\s*,\s*"
             r"(?:\[(?P<bracket_body>.*?)\]|array\s*\((?P<array_body>.*?)\))\s*\)\s*;",
-            text,
+            masked,
             re.DOTALL,
         ):
             handle = match.group("handle")
@@ -1257,7 +1292,7 @@ def detect_consumed_endpoints(
         found, client_issues, scanned = _HANDLERS[client](repository, files)
         for finding in found:
             endpoints[finding.identity()] = finding
-        if not found:
+        if not found and scanned:
             client_issues.append(
                 DiscoveryIssue(
                     code="http_client_detected_no_calls",

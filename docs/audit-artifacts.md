@@ -31,9 +31,9 @@ The OpenAPI document contains only HTTP endpoints proven as `exposed` by discove
 
 Consumed calls are not emitted as provider paths. SOAP operations are not converted to REST paths.
 
-v0.5.3 enriches Slim/PHP route contracts only when source reconstruction can prove the data. Request bodies, response schemas, authentication and authorization are not invented. Generated operations include ASGARD traceability extensions, canonical path mapping and conservative defaults where details remain unknown.
+v0.5.4 enriches Slim/PHP route contracts only when source reconstruction can prove the data. Request bodies, response schemas, authentication and authorization are not invented. Generated operations include ASGARD traceability extensions, canonical path mapping and conservative defaults where details remain unknown.
 
-Supported Slim/PHP enrichment patterns in v0.5.3:
+Supported Slim/PHP enrichment patterns in v0.5.4:
 
 - route path parameters from literal Slim templates, with source parameter names preserved through canonical OpenAPI paths;
 - JSON request bodies decoded from `$request->getBody()` into a local variable and read through literal keys;
@@ -48,6 +48,8 @@ Supported Slim/PHP enrichment patterns in v0.5.3:
 
 Dynamic request keys, ambiguous local function propagation, dynamic response payloads, unsupported body parsing, status-code inference from JSON fields, scopes/roles/issuer/audience and global security assumptions remain unresolved or unknown.
 
+HTTP consumer discovery in v0.5.4 masks source comments before matching active calls for Angular HttpClient, Axios, Fetch, Dart Dio, Dart `http`, PHP cURL, Guzzle and Laravel Http facade detectors. Masking preserves source offsets and line numbers, so evidence still points to the original file locations.
+
 ### API Knowledge
 
 The Markdown knowledge artifact includes:
@@ -61,9 +63,9 @@ The Markdown knowledge artifact includes:
 
 ### Findings
 
-`findings.json` maps discovery evidence into the versioned findings contract, includes `coverage.contract_enrichment` counters and adds a blocking `contract-enrichment-v0.5.3-coverage-gate` unresolved item until all completion gates are explicitly satisfied.
+`findings.json` maps discovery evidence into the versioned findings contract, includes `coverage.contract_enrichment` counters and adds a blocking `contract-enrichment-v0.5.4-coverage-gate` unresolved item until all completion gates are explicitly satisfied.
 
-Therefore v0.5.3 audit status is `partial` even when `discovery_complete=true`.
+Therefore v0.5.4 audit status is `partial` even when `discovery_complete=true`.
 
 ### Audit report
 
