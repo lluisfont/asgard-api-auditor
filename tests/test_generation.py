@@ -188,7 +188,7 @@ class GenerationTests(unittest.TestCase):
             }
 
             get_almacen = endpoints[("GET", "/almacenes/{idalmacen}")]
-            self.assertEqual(get_almacen["authentication"], "bearer JWT Authorization HS256")
+            self.assertEqual(get_almacen["authentication"], "Authorization header raw JWT HS256")
             self.assertEqual(get_almacen["authorization"], "middleware:$verifyToken")
             self.assertEqual(
                 get_almacen["request"]["parameters"][0]["name"],
@@ -217,13 +217,171 @@ class GenerationTests(unittest.TestCase):
 
             publico = endpoints[("GET", "/publico")]
             self.assertNotIn("authentication", publico)
-            self.assertIn("bearerAuth", openapi)
+            self.assertNotIn("scheme: bearer", openapi)
+            self.assertIn("authorizationHeader:", openapi)
+            self.assertIn("type: apiKey", openapi)
+            self.assertIn("name: Authorization", openapi)
+            self.assertIn("x-asgard-authorization-syntax: raw-jwt", openapi)
             self.assertIn("security:", openapi)
             self.assertIn('"application/json":', openapi)
             self.assertNotIn("consumer.example", openapi)
             self.assertEqual(findings["coverage"]["contract_enrichment"]["request_enriched"], 1)
             self.assertEqual(findings["coverage"]["contract_enrichment"]["response_enriched"], 2)
             self.assertEqual(findings["status"], "partial")
+
+    def test_authorization_header_jwt_decode_raw_header_is_not_bearer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->get('/private', function($request, $response, $args) {\n"
+                "    $token = $request->getHeaderLine('Authorization');\n"
+                "    $decoded = (array) JWT::decode($token, new Key(jwt_key, 'HS256'));\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            openapi = (destination / "openapi.yaml").read_text(encoding="utf-8")
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            endpoint = next(
+                item
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/private"
+            )
+
+            self.assertEqual(endpoint["authentication"], "Authorization header raw JWT HS256")
+            self.assertNotIn("scheme: bearer", openapi)
+            self.assertIn("authorizationHeader:", openapi)
+            self.assertIn("type: apiKey", openapi)
+            self.assertIn("in: header", openapi)
+            self.assertIn("name: Authorization", openapi)
+            self.assertIn("x-asgard-credential-format: JWT", openapi)
+            self.assertIn("x-asgard-jwt-algorithm: HS256", openapi)
+            self.assertIn("x-asgard-authorization-syntax: raw-jwt", openapi)
+
+    def test_local_jwt_middleware_is_resolved_deterministically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$verifyToken = function($request, $handler) {\n"
+                "    $token = $request->getHeaderLine('Authorization');\n"
+                "    $decoded = (array) JWT::decode(\n"
+                "        $token,\n"
+                "        new Key(jwt_key, 'HS256')\n"
+                "    );\n"
+                "    return $handler->handle($request);\n"
+                "};\n"
+                "$app->get('/private', function($request, $response, $args) {\n"
+                "    return $response;\n"
+                "})->add($verifyToken);\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            openapi = (destination / "openapi.yaml").read_text(encoding="utf-8")
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            endpoint = next(
+                item
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/private"
+            )
+            coverage = findings["coverage"]["contract_enrichment"]
+
+            self.assertEqual(endpoint["authentication"], "Authorization header raw JWT HS256")
+            self.assertEqual(endpoint["authorization"], "middleware:$verifyToken")
+            self.assertIn("authorizationHeader:", openapi)
+            self.assertNotIn("scheme: bearer", openapi)
+            self.assertEqual(coverage["security_enrichment_applicable"], 1)
+            self.assertEqual(coverage["security_enriched"], 1)
+
+    def test_unknown_middleware_creates_security_unresolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->get('/private', function($request, $response, $args) {\n"
+                "    return $response;\n"
+                "})->add($unknownMiddleware);\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            openapi = (destination / "openapi.yaml").read_text(encoding="utf-8")
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            endpoint = next(
+                item
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/private"
+            )
+            descriptions = [item["description"] for item in findings["unresolved"]]
+            coverage = findings["coverage"]["contract_enrichment"]
+
+            self.assertEqual(endpoint["authorization"], "middleware:$unknownMiddleware")
+            self.assertNotIn("authentication", endpoint)
+            self.assertNotIn("authorizationHeader:", openapi)
+            self.assertTrue(any("slim_php_security_unresolved" in item for item in descriptions))
+            self.assertEqual(coverage["security_enrichment_applicable"], 1)
+            self.assertEqual(coverage["security_enriched"], 0)
+            self.assertEqual(coverage["unresolved_contract_enrichment"], 1)
+
+    def test_ambiguous_middleware_definitions_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$verifyToken = function($request, $handler) {\n"
+                "    $token = $request->getHeaderLine('Authorization');\n"
+                "    JWT::decode($token, new Key(jwt_key, 'HS256'));\n"
+                "    return $handler->handle($request);\n"
+                "};\n"
+                "$verifyToken = function($request, $handler) {\n"
+                "    return $handler->handle($request);\n"
+                "};\n"
+                "$app->get('/private', function($request, $response, $args) {\n"
+                "    return $response;\n"
+                "})->add($verifyToken);\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            endpoint = next(
+                item
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/private"
+            )
+            descriptions = [item["description"] for item in findings["unresolved"]]
+
+            self.assertNotIn("authentication", endpoint)
+            self.assertTrue(any("multiple middleware definitions exist" in item for item in descriptions))
+
+    def test_consumed_http_and_soap_remain_out_of_provider_openapi(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            (repo / "soap.php").write_text(
+                "<?php\n$client = new SoapClient('https://soap.example/service.wsdl');\n"
+                "$client->__soapCall('SubmitOrder', array());\n",
+                encoding="utf-8",
+            )
+            _git(repo, "add", "soap.php")
+            _git(repo, "commit", "-qm", "soap client")
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            openapi = (destination / "openapi.yaml").read_text(encoding="utf-8")
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+
+            self.assertNotIn("consumer.example", openapi)
+            self.assertNotIn("soap.example", openapi)
+            self.assertNotIn("SubmitOrder", openapi)
+            self.assertTrue(any(item["direction"] == "consumed" for item in findings["endpoints"]))
 
     def test_dynamic_contract_inputs_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

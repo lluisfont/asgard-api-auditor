@@ -6,7 +6,8 @@
 
 - Deterministic Slim/PHP contract enrichment for exposed endpoints during audit artifact generation.
 - Path parameters now carry source evidence and survive v0.5.1 OpenAPI canonical path mapping.
-- Supported Slim/PHP patterns enrich JSON request body fields, optional `??` defaults, JSON response fields, `Content-Type: application/json`, route middleware and JWT bearer authorization evidence.
+- Supported Slim/PHP patterns enrich JSON request body fields, optional `??` defaults, JSON response fields, `Content-Type: application/json`, route middleware and demonstrated JWT Authorization header evidence without assuming bearer syntax.
+- Unique local Slim/PHP middleware closures can now provide route authentication evidence for routes using `->add($verifyToken)`.
 - Findings coverage now includes objective contract-enrichment counters and unresolved contract-enrichment findings.
 
 ### Changed

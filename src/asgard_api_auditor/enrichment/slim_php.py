@@ -27,6 +27,41 @@ _CONTENT_TYPE_JSON = re.compile(
     r"withHeader\s*\(\s*['\"]Content-Type['\"]\s*,\s*['\"]application/json['\"]\s*\)",
     re.IGNORECASE | re.DOTALL,
 )
+_MIDDLEWARE_FUNCTION = re.compile(
+    r"(?P<variable>\$[A-Za-z_]\w*)\s*=\s*function\s*"
+    r"\([^)]*\)\s*(?:use\s*\([^)]*\)\s*)?\{",
+    re.IGNORECASE | re.DOTALL,
+)
+_ROUTE_MIDDLEWARE = re.compile(r"->add\s*\(\s*(?P<middleware>\$[A-Za-z_]\w*)")
+_JWT_DECODE = re.compile(
+    r"JWT::decode\s*\(\s*(?P<credential>.*?)\s*,\s*new\s+Key\s*"
+    r"\([^;]*?['\"](?P<algorithm>[A-Za-z0-9_-]+)['\"]",
+    re.IGNORECASE | re.DOTALL,
+)
+_HEADER_LINE_ASSIGNMENT = re.compile(
+    r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*\$request->getHeaderLine\s*\(\s*"
+    r"['\"]Authorization['\"]\s*\)",
+    re.IGNORECASE,
+)
+_HEADERS_ASSIGNMENT = re.compile(
+    r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*apache_request_headers\s*\(\s*\)",
+    re.IGNORECASE,
+)
+_AUTHORIZATION_INDEX_ASSIGNMENT = re.compile(
+    r"(?P<var>\$[A-Za-z_]\w*)\s*=\s*(?P<headers>\$[A-Za-z_]\w*)"
+    r"\s*\[\s*['\"]Authorization['\"]\s*\]",
+    re.IGNORECASE,
+)
+_DIRECT_HEADER_LINE = re.compile(
+    r"\$request->getHeaderLine\s*\(\s*['\"]Authorization['\"]\s*\)",
+    re.IGNORECASE,
+)
+_DIRECT_AUTHORIZATION_INDEX = re.compile(r"\[\s*['\"]Authorization['\"]\s*\]", re.IGNORECASE)
+_BEARER_SYNTAX = re.compile(
+    r"preg_replace\s*\([^)]*Bearer|str_ireplace\s*\([^)]*Bearer|"
+    r"str_replace\s*\([^)]*Bearer",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +75,22 @@ class _RouteSource:
     body_start: int
     body_end: int
     suffix: str
+
+
+@dataclass(frozen=True)
+class _MiddlewareSource:
+    variable: str
+    file: Path
+    text: str
+    offset: int
+    body: str
+    body_start: int
+
+
+@dataclass(frozen=True)
+class _AuthenticationEvidence:
+    authentication: str
+    evidence: Evidence
 
 
 @dataclass
@@ -265,6 +316,32 @@ def _extract_routes(repository: Path, files: list[Path]) -> dict[tuple[str, str]
             )
             routes[(source.method, source.path)] = source
     return routes
+
+
+def _extract_middleware_definitions(files: list[Path]) -> dict[str, list[_MiddlewareSource]]:
+    definitions: dict[str, list[_MiddlewareSource]] = {}
+    for file in files:
+        if file.suffix.lower() != ".php":
+            continue
+        text = read_source(file)
+        if text is None or "function" not in text:
+            continue
+        masked = _mask_comments(text)
+        for match in _MIDDLEWARE_FUNCTION.finditer(masked):
+            body_start = match.end()
+            body_end = _matching_delimiter(masked, body_start - 1, "{", "}")
+            if body_end is None:
+                continue
+            source = _MiddlewareSource(
+                variable=match.group("variable"),
+                file=file,
+                text=text,
+                offset=match.start(),
+                body=masked[body_start:body_end],
+                body_start=body_start,
+            )
+            definitions.setdefault(source.variable, []).append(source)
+    return definitions
 
 
 def _path_request(
@@ -553,49 +630,195 @@ def _response_json(
     return response, [], True, True
 
 
+def _authorization_header_variables(body: str) -> set[str]:
+    variables: set[str] = set()
+    header_collections = {match.group("var") for match in _HEADERS_ASSIGNMENT.finditer(body)}
+    for match in _HEADER_LINE_ASSIGNMENT.finditer(body):
+        variables.add(match.group("var"))
+    for match in _AUTHORIZATION_INDEX_ASSIGNMENT.finditer(body):
+        if match.group("headers") in header_collections:
+            variables.add(match.group("var"))
+    return variables
+
+
+def _credential_uses_authorization_header(body: str, credential: str) -> bool:
+    stripped = credential.strip()
+    if _DIRECT_HEADER_LINE.fullmatch(stripped):
+        return True
+    if _DIRECT_AUTHORIZATION_INDEX.search(stripped) is not None:
+        return "apache_request_headers" in body or "$headers" in stripped
+    if re.fullmatch(r"\$[A-Za-z_]\w*", stripped):
+        return stripped in _authorization_header_variables(body)
+    return False
+
+
+def _authentication_from_body(
+    repository: Path,
+    file: Path,
+    text: str,
+    body: str,
+    body_start: int,
+) -> _AuthenticationEvidence | None:
+    for match in _JWT_DECODE.finditer(body):
+        algorithm = match.group("algorithm")
+        if not _credential_uses_authorization_header(body, match.group("credential")):
+            continue
+        if _BEARER_SYNTAX.search(body):
+            authentication = f"bearer JWT Authorization {algorithm}"
+            note = "JWT Authorization bearer validation"
+        else:
+            authentication = f"Authorization header raw JWT {algorithm}"
+            note = "JWT Authorization header raw value validation"
+        return _AuthenticationEvidence(
+            authentication=authentication,
+            evidence=_evidence(
+                repository,
+                file,
+                text,
+                body_start + match.start(),
+                note,
+            ),
+        )
+    return None
+
+
+def _middleware_unresolved(
+    repository: Path,
+    source: _RouteSource,
+    middleware: str,
+    reason: str,
+    offset: int,
+) -> ContractUnresolved:
+    return ContractUnresolved(
+        code="slim_php_security_unresolved",
+        message=(
+            f"{source.method} {source.path} uses middleware {middleware}, "
+            f"but authentication could not be reconstructed: {reason}."
+        ),
+        evidence=(
+            _evidence(
+                repository,
+                source.file,
+                source.text,
+                source.body_end + offset,
+                f"Slim route middleware {middleware}",
+            ),
+        ),
+    )
+
+
+def _security_unresolved(
+    repository: Path,
+    source: _RouteSource,
+    reason: str,
+) -> ContractUnresolved:
+    return ContractUnresolved(
+        code="slim_php_security_unresolved",
+        message=(
+            f"{source.method} {source.path} contains security evidence, "
+            f"but authentication could not be reconstructed: {reason}."
+        ),
+        evidence=(
+            _evidence(
+                repository,
+                source.file,
+                source.text,
+                source.route_offset,
+                "Slim route security evidence",
+            ),
+        ),
+    )
+
+
 def _security(
     repository: Path,
     endpoint: EndpointFinding,
     source: _RouteSource,
-) -> tuple[bool, bool]:
+    middleware_definitions: dict[str, list[_MiddlewareSource]],
+) -> tuple[bool, bool, list[ContractUnresolved]]:
     body = source.body
     suffix = source.suffix
-    middleware = re.search(r"->add\s*\(\s*(?P<middleware>\$[A-Za-z_]\w*)\s*\)", suffix)
-    headers = re.search(r"apache_request_headers\s*\(\s*\)", body, re.IGNORECASE)
-    authorization = re.search(r"\[\s*['\"]Authorization['\"]\s*\]", body)
-    jwt = re.search(
-        r"JWT::decode\s*\([^;]*?new\s+Key\s*\([^;]*?['\"](?P<algorithm>HS256)['\"]",
-        body,
-        re.IGNORECASE | re.DOTALL,
-    )
-    applicable = any(match is not None for match in (middleware, headers, authorization, jwt))
+    middleware_matches = list(_ROUTE_MIDDLEWARE.finditer(suffix))
+    inline_auth = _authentication_from_body(repository, source.file, source.text, body, source.body_start)
+    applicable = bool(middleware_matches) or inline_auth is not None or "Authorization" in body or "JWT::decode" in body
     if not applicable:
-        return False, False
+        return False, False, []
 
-    if middleware is not None:
-        endpoint.authorization = f"middleware:{middleware.group('middleware')}"
+    unresolved: list[ContractUnresolved] = []
+    middleware_names = [match.group("middleware") for match in middleware_matches]
+    if middleware_names:
+        endpoint.authorization = ", ".join(f"middleware:{name}" for name in middleware_names)
+    for match in middleware_matches:
         endpoint.evidence.append(
             _evidence(
                 repository,
                 source.file,
                 source.text,
-                source.body_end + middleware.start(),
-                "Slim route middleware",
+                source.body_end + match.start(),
+                f"Slim route middleware {match.group('middleware')}",
             )
         )
-    if headers is not None and authorization is not None and jwt is not None:
-        endpoint.authentication = "bearer JWT Authorization HS256"
-        endpoint.evidence.append(
-            _evidence(
+
+    authentication = inline_auth
+    for match in middleware_matches:
+        if authentication is not None:
+            break
+        middleware = match.group("middleware")
+        definitions = middleware_definitions.get(middleware, [])
+        if len(definitions) == 1:
+            definition = definitions[0]
+            authentication = _authentication_from_body(
                 repository,
-                source.file,
-                source.text,
-                source.body_start + jwt.start(),
-                "JWT Authorization bearer validation",
+                definition.file,
+                definition.text,
+                definition.body,
+                definition.body_start,
+            )
+            if authentication is None:
+                unresolved.append(
+                    _middleware_unresolved(
+                        repository,
+                        source,
+                        middleware,
+                        "middleware definition has no supported Authorization JWT evidence",
+                        match.start(),
+                    )
+                )
+        elif len(definitions) > 1:
+            unresolved.append(
+                _middleware_unresolved(
+                    repository,
+                    source,
+                    middleware,
+                    "multiple middleware definitions exist",
+                    match.start(),
+                )
+            )
+        else:
+            unresolved.append(
+                _middleware_unresolved(
+                    repository,
+                    source,
+                    middleware,
+                    "middleware definition was not found in scanned PHP files",
+                    match.start(),
+                )
+            )
+
+    if authentication is not None:
+        endpoint.authentication = authentication.authentication
+        endpoint.evidence.append(authentication.evidence)
+        return True, True, unresolved
+
+    if not unresolved:
+        unresolved.append(
+            _security_unresolved(
+                repository,
+                source,
+                "Authorization/JWT evidence is incomplete or dynamic",
             )
         )
-        return True, True
-    return True, False
+    return True, False, unresolved
 
 
 def _merge_request(existing: RequestFinding | None, parameters: list[ParameterFinding]) -> RequestFinding:
@@ -605,6 +828,25 @@ def _merge_request(existing: RequestFinding | None, parameters: list[ParameterFi
         if (parameter.location, parameter.name) not in names:
             request.parameters.append(parameter)
     return request
+
+
+def _dedupe_unresolved(unresolved: list[ContractUnresolved]) -> list[ContractUnresolved]:
+    seen: set[tuple[object, ...]] = set()
+    deduped: list[ContractUnresolved] = []
+    for issue in unresolved:
+        key = (
+            issue.code,
+            issue.message,
+            tuple(
+                (item.path, item.line, item.end_line, item.kind, item.note)
+                for item in issue.evidence
+            ),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(issue)
+    return deduped
 
 
 def enrich_slim_php_contracts(
@@ -617,6 +859,7 @@ def enrich_slim_php_contracts(
     coverage = ContractEnrichmentCoverage(total_exposed_endpoints=len(exposed))
     unresolved: list[ContractUnresolved] = []
     routes = _extract_routes(repository, files)
+    middleware_definitions = _extract_middleware_definitions(files)
 
     for endpoint in exposed:
         source = routes.get((endpoint.method, endpoint.path))
@@ -651,18 +894,25 @@ def enrich_slim_php_contracts(
                 coverage.response_enriched += 1
         unresolved.extend(response_unresolved)
 
-        security_applicable, security_enriched = _security(repository, endpoint, source)
+        security_applicable, security_enriched, security_unresolved = _security(
+            repository,
+            endpoint,
+            source,
+            middleware_definitions,
+        )
         if security_applicable:
             coverage.security_enrichment_applicable += 1
             if security_enriched:
                 coverage.security_enriched += 1
+        unresolved.extend(security_unresolved)
 
         if any(note.startswith("contract_enrichment_status=") for note in endpoint.notes):
             continue
         status = "enriched" if any([endpoint.request, endpoint.response, endpoint.authentication]) else "pending"
-        if request_unresolved or response_unresolved:
+        if request_unresolved or response_unresolved or security_unresolved:
             status = "partial"
         endpoint.notes.append(f"contract_enrichment_status={status}")
 
+    unresolved = _dedupe_unresolved(unresolved)
     coverage.unresolved_contract_enrichment = len(unresolved)
     return ContractEnrichmentResult(enriched, coverage, unresolved)

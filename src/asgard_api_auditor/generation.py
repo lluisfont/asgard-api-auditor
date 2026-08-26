@@ -159,9 +159,18 @@ def _unresolved_payload(issue: DiscoveryIssue) -> dict[str, object]:
 
 
 def _contract_unresolved_payload(issue: ContractUnresolved) -> dict[str, object]:
+    evidence_key = "|".join(
+        f"{item.path}:{item.line}:{item.note or ''}" for item in issue.evidence
+    )
     return {
-        "unresolved_id": _stable_id("unresolved", "contract-enrichment", issue.code, issue.message),
-        "category": "authentication" if "auth" in issue.code else "schema",
+        "unresolved_id": _stable_id(
+            "unresolved",
+            "contract-enrichment",
+            issue.code,
+            issue.message,
+            evidence_key,
+        ),
+        "category": "authentication" if any(term in issue.code for term in ("auth", "security")) else "schema",
         "description": f"{issue.code}: {issue.message}",
         "impact": "blocking",
         "evidence": [_safe_evidence(item) for item in issue.evidence],
@@ -429,6 +438,9 @@ def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
     has_bearer_auth = any(
         (item.authentication or "").startswith("bearer JWT") for item in exposed
     )
+    has_authorization_header_auth = any(
+        (item.authentication or "").startswith("Authorization header raw JWT") for item in exposed
+    )
 
     lines = [
         f"openapi: {OPENAPI_VERSION}",
@@ -440,17 +452,34 @@ def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
         f'x-asgard-source-commit: "{discovery.source_commit}"',
         "x-asgard-contract-enrichment: partial",
     ]
-    if has_bearer_auth:
+    if has_bearer_auth or has_authorization_header_auth:
         lines.extend(
             [
                 "components:",
                 "  securitySchemes:",
-                "    bearerAuth:",
-                "      type: http",
-                "      scheme: bearer",
-                "      bearerFormat: JWT",
             ]
         )
+        if has_bearer_auth:
+            lines.extend(
+                [
+                    "    bearerAuth:",
+                    "      type: http",
+                    "      scheme: bearer",
+                    "      bearerFormat: JWT",
+                ]
+            )
+        if has_authorization_header_auth:
+            lines.extend(
+                [
+                    "    authorizationHeader:",
+                    "      type: apiKey",
+                    "      in: header",
+                    "      name: Authorization",
+                    "      x-asgard-credential-format: JWT",
+                    "      x-asgard-jwt-algorithm: HS256",
+                    "      x-asgard-authorization-syntax: raw-jwt",
+                ]
+            )
     lines.append("paths:")
     if not groups:
         lines[-1] = "paths: {}"
@@ -517,6 +546,8 @@ def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
                 )
             if (endpoint.authentication or "").startswith("bearer JWT"):
                 lines.extend(["      security:", "        - bearerAuth: []"])
+            elif (endpoint.authentication or "").startswith("Authorization header raw JWT"):
+                lines.extend(["      security:", "        - authorizationHeader: []"])
             response_description = (
                 "Response contract reconstructed from source evidence."
                 if endpoint.response is not None and endpoint.response.schema is not None

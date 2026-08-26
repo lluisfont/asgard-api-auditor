@@ -40,7 +40,7 @@ Supported Slim/PHP enrichment patterns in v0.5.2:
 - optional JSON request fields using `??` with literal defaults;
 - JSON responses encoded from inline `array(...)` payloads or local variables assigned to deterministic arrays;
 - `Content-Type: application/json` set through `withHeader(...)`;
-- route middleware via `->add($verifyToken)` and JWT bearer validation using `Authorization` plus `JWT::decode(... new Key(..., 'HS256'))`.
+- route middleware via `->add($verifyToken)`, including unique local middleware closures, and JWT validation using the `Authorization` header plus `JWT::decode(... new Key(..., 'HS256'))`; raw header JWT syntax is represented as an OpenAPI `apiKey` header scheme unless bearer syntax is explicitly proven.
 
 Dynamic request keys, dynamic response payloads, unsupported body parsing, status-code inference from JSON fields, scopes/roles/issuer/audience and global security assumptions remain unresolved or unknown.
 
