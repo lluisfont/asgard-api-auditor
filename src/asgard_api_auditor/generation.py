@@ -1,4 +1,4 @@
-"""Generate conservative v0.5 audit artifacts from proven discovery evidence."""
+"""Generate conservative audit artifacts from proven discovery evidence."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ from .discovery_utils import iter_source_files
 from .enrichment import ContractEnrichmentResult, ContractUnresolved, enrich_slim_php_contracts
 from .inventory import inventory_repository
 from .models import AuditTarget, EndpointFinding, Evidence, TechnicalInventory
+from .path_normalization import ROUTE_PARAMETER, normalized_path_shape, path_parameter_names
 from .redaction import redact_text
 
-_PATH_PARAMETER = re.compile(r"\{(?P<name>[A-Za-z_][A-Za-z0-9_-]*)(?::[^}]+)?\}")
 _ALLOWED_FINDINGS_EVIDENCE = {
     "route",
     "controller",
@@ -350,7 +350,7 @@ def _render_report(
         "",
         "- Complete and validate contract enrichment coverage gates.",
         "- Resolve any remaining dynamic request/response/security patterns.",
-        "- Complete later provider/consumer correlation and breaking-change gates.",
+        "- Generate and evaluate provider/consumer correlation artifacts before breaking-change gates.",
     ]
     if discovery.unresolved:
         lines.append("- Resolve discovery-level blocking findings listed below.")
@@ -375,11 +375,11 @@ def _operation_id(endpoint: EndpointFinding) -> str:
 
 
 def _path_shape(path: str) -> str:
-    return _PATH_PARAMETER.sub("{}", path)
+    return normalized_path_shape(path)
 
 
 def _path_parameter_names(path: str) -> list[str]:
-    return [match.group("name") for match in _PATH_PARAMETER.finditer(path)]
+    return path_parameter_names(path)
 
 
 def _canonical_path(path: str) -> str:
@@ -390,7 +390,7 @@ def _canonical_path(path: str) -> str:
         index += 1
         return f"{{param{index}}}"
 
-    return _PATH_PARAMETER.sub(replace, path)
+    return ROUTE_PARAMETER.sub(replace, path)
 
 
 def _schema_json(schema: dict[str, object]) -> str:
@@ -586,11 +586,11 @@ def _findings(
     unresolved.extend(_contract_unresolved_payload(item) for item in enrichment.unresolved)
     unresolved.append(
         {
-            "unresolved_id": "contract-enrichment-v0.5.4-coverage-gate",
+            "unresolved_id": "contract-enrichment-v0.6.0-coverage-gate",
             "category": "schema",
             "description": (
                 "Audit completion remains gated until deterministic contract enrichment coverage "
-                "and later provider/consumer correlation gates are explicitly complete."
+                "and provider/consumer correlation artifacts are explicitly evaluated."
             ),
             "impact": "blocking",
             "evidence": [],

@@ -12,6 +12,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from asgard_api_auditor.constants import (  # noqa: E402
+    CORRELATIONS_SCHEMA_VERSION,
     ENDPOINT_DISCOVERY_SCHEMA_VERSION,
     FINDINGS_SCHEMA_VERSION,
     OPENAPI_VERSION,
@@ -112,6 +113,50 @@ def validate_discovery_schema() -> None:
     require(expected.issubset(required), "endpoint discovery schema misses coverage/provenance fields")
 
 
+def validate_correlations_schema() -> None:
+    path = ROOT / "schemas" / "correlations.schema.json"
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    props = schema["properties"]
+    required = set(schema["required"])
+    expected = {
+        "schema_version",
+        "correlation_id",
+        "auditor_version",
+        "generated_at",
+        "inputs",
+        "coverage",
+        "correlations",
+        "provider_reverse_index",
+    }
+    require(expected.issubset(required), "correlations schema misses required top-level fields")
+    require(
+        props["schema_version"].get("const") == CORRELATIONS_SCHEMA_VERSION,
+        "correlations schema version mismatch",
+    )
+    correlation_required = set(schema["$defs"]["correlation"]["required"])
+    for key in (
+        "correlation_id",
+        "status",
+        "consumer_endpoint_id",
+        "normalized_path_shape",
+        "candidate_count",
+        "candidate_providers",
+        "match_strategy",
+        "confidence",
+    ):
+        require(key in correlation_required, f"correlation records must require {key}")
+    reverse_required = set(schema["$defs"]["providerReverseIndex"]["required"])
+    require("confirmed_consumers" in reverse_required, "reverse index must list confirmed consumers")
+    require(
+        "unique_candidate_consumers" in reverse_required,
+        "reverse index must list unique candidate consumers",
+    )
+    require(
+        "ambiguous_candidate_consumers" in reverse_required,
+        "reverse index must keep ambiguous consumers separate",
+    )
+
+
 def validate_templates() -> None:
     shared_tokens = (
         "{{ audit_id }}",
@@ -146,6 +191,7 @@ def main() -> int:
         validate_findings_schema,
         validate_inventory_schema,
         validate_discovery_schema,
+        validate_correlations_schema,
         validate_templates,
         validate_primary_contract,
     ]

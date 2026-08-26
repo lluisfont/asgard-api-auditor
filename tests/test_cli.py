@@ -124,6 +124,56 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 3)
             self.assertTrue((root / "output" / "findings.json").is_file())
 
+    def test_correlate_generates_relationship_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            findings = root / "findings.json"
+            findings.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "2.0",
+                        "audit_id": "audit-repo",
+                        "auditor_version": "0.6.0",
+                        "repository": "repo",
+                        "repository_id": "repo",
+                        "source_ref": "main",
+                        "source_commit": "a" * 40,
+                        "audit_timestamp": "2026-08-26T00:00:00+00:00",
+                        "status": "partial",
+                        "coverage": {},
+                        "endpoints": [
+                            {
+                                "endpoint_id": "consumed-get-health",
+                                "direction": "consumed",
+                                "surface_type": "http",
+                                "method": "GET",
+                                "path": "/health",
+                                "confidence": "confirmed",
+                                "confidence_reason": "fixture",
+                                "evidence": [{"path": "api.ts", "line": 1, "kind": "http_client"}],
+                                "notes": [],
+                            }
+                        ],
+                        "integration_surfaces": [],
+                        "unresolved": [],
+                        "artifacts": {
+                            "openapi.yaml": {"status": "validated"},
+                            "api-knowledge.md": {"status": "validated"},
+                            "audit-report.md": {"status": "validated"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = root / "relations"
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(["correlate", "--findings", str(findings), "--output", str(output)])
+            self.assertEqual(code, 0)
+            self.assertIn("Correlation artifacts written", stdout.getvalue())
+            self.assertTrue((output / "correlations.json").is_file())
+            self.assertTrue((output / "api-relations.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

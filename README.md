@@ -12,9 +12,9 @@ La pregunta operativa es:
 
 ## Estado
 
-**v0.5.4 — discovery de consumidores HTTP con comentarios ignorados y fail-closed.**
+**v0.6.0 — correlación determinística proveedor-consumidor sobre `findings.json`.**
 
-La v0.3 detecta tecnologías y superficies. La v0.4.x localiza endpoints HTTP expuestos/consumidos y operaciones SOAP con cobertura fail-closed. La v0.5 empieza a convertir ese discovery en artefactos auditables y reutilizables.
+La v0.3 detecta tecnologías y superficies. La v0.4.x localiza endpoints HTTP expuestos/consumidos y operaciones SOAP con cobertura fail-closed. La v0.5 convierte ese discovery en artefactos auditables y reutilizables. La v0.6 añade una primera capa de relación entre consumidores y proveedores a partir de artifacts versionados.
 
 ## Inventario técnico
 
@@ -61,7 +61,7 @@ Si aparece un framework, cliente o patrón no soportado, `discovery_complete=fal
 
 Más detalle: [`docs/endpoint-discovery.md`](docs/endpoint-discovery.md).
 
-## Generación de auditoría v0.5
+## Generación de auditoría v0.6
 
 ```bash
 asgard-api-auditor audit /ruta/al/repositorio \
@@ -86,10 +86,37 @@ Los mismos snapshots SOAP de `discover` pueden pasarse a `audit` con `--soap-wsd
 - Las llamadas HTTP consumidas permanecen en `findings.json` y `api-knowledge.md`; no se convierten en paths del proveedor.
 - SOAP permanece como superficie de integración separada y nunca se convierte artificialmente en REST.
 - Request bodies, responses, autenticación y autorización se añaden solo cuando pueden demostrarse desde código Slim/PHP.
-- v0.5.4 registra cobertura objetiva de enrichment y mantiene un blocker explícito `contract-enrichment-v0.5.4-coverage-gate`; por tanto el `audit` permanece `partial` aunque `discovery_complete=true`.
+- v0.6.0 registra cobertura objetiva de enrichment y mantiene un blocker explícito `contract-enrichment-v0.6.0-coverage-gate`; por tanto el `audit` permanece `partial` aunque `discovery_complete=true`.
 - Los detectores de consumidores HTTP enmascaran comentarios antes de buscar llamadas activas, preservando líneas/evidencia y evitando falsos positivos de código comentado.
 
 Más detalle: [`docs/audit-artifacts.md`](docs/audit-artifacts.md).
+
+## Correlación proveedor-consumidor v0.6
+
+```bash
+asgard-api-auditor correlate \
+  --findings warehouse-audit/findings.json \
+  --findings mobile-audit/findings.json \
+  --output correlation-results
+```
+
+El comando genera y valida atómicamente:
+
+- `correlations.json`
+- `api-relations.md`
+
+La correlación opera sobre artifacts `findings.json`, no sobre scanners acoplados entre repositorios. La clave MVP es estrictamente `HTTP method + normalized path shape`: solo se normalizan nombres de parámetros de ruta, preservando segmentos literales, cantidad de segmentos, método y semántica de slash final.
+
+Estados:
+
+- `matched_confirmed`: existe identidad de proveedor explícita en el artifact del consumidor y coincide con un proveedor.
+- `matched_unique_candidate`: un único proveedor comparte método y shape, pero no está probado como dependencia runtime.
+- `ambiguous`: más de un proveedor comparte método y shape; no se elige ninguno.
+- `unmatched`: no existe candidato por método y shape.
+
+No hay fuzzy matching, heurísticas por host, nombres de repositorio, mappings manuales ni clasificación automática de externos. SOAP permanece fuera de la correlación HTTP.
+
+Más detalle: [`docs/output-contracts.md`](docs/output-contracts.md).
 
 ## Arquitectura
 
@@ -110,7 +137,7 @@ discover (v0.4)
         +--> unresolved / unsupported
         |
         v
-audit artifacts (v0.5)
+audit artifacts (v0.6)
         +--> openapi.yaml
         +--> api-knowledge.md
         +--> findings.json
@@ -119,7 +146,7 @@ audit artifacts (v0.5)
         v
 fases siguientes
         +--> deeper request/response/security enrichment
-        +--> provider/consumer correlation
+        +--> correlate
         +--> breaking-change gate
         +--> API Knowledge / RAG central
 ```
@@ -128,7 +155,7 @@ fases siguientes
 
 `discovery_complete=true` solo puede producirse cuando el inventario terminó sin huecos conocidos, existe al menos un detector aplicable, todos los detectores ejecutados están soportados y no existen patrones o superficies pendientes.
 
-`audit status=complete` exige además que el contrato behavioral esté reconstruido y validado. En v0.5.4 el audit permanece intencionadamente `partial`: existe enrichment Slim/PHP parcial y trazable, pero los gates globales todavía no están completos.
+`audit status=complete` exige además que el contrato behavioral esté reconstruido y validado. En v0.6.0 el audit permanece intencionadamente `partial`: existe enrichment Slim/PHP parcial y trazable, y la correlación se genera en artifacts separados para evaluación explícita antes de futuros gates de breaking changes.
 
 Encontrar cero endpoints nunca se interpreta automáticamente como ausencia de APIs.
 

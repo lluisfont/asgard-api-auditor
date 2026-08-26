@@ -95,13 +95,13 @@ Each detector must declare:
 
 ## Cross-repository correlation
 
-Provider-consumer correlation is not assumed from names alone. Prefer, in descending strength:
+Provider-consumer correlation is generated from versioned `findings.json` artifacts, not by coupling scanners across repositories.
 
-1. exact base URL + normalized path;
-2. service/domain configuration + path;
-3. explicit SDK/client reference;
-4. runtime/test evidence;
-5. inference marked `probable` or `unverified`.
+The v0.6.0 relationship layer uses exact HTTP method plus normalized path shape. It normalizes only route parameter names and deliberately avoids fuzzy matching, host substring matching, repository-name heuristics and manual mandatory mappings.
+
+One unique shape match is a deterministic candidate, not a confirmed runtime dependency. A match becomes confirmed only when the consumer artifact already contains explicit provider identity evidence.
+
+The correlation publisher emits `correlations.json` and `api-relations.md` atomically. Its reverse provider index separates confirmed, unique-candidate and ambiguous consumer references so future breaking-change gates do not overstate certainty.
 
 ## Publication model
 
