@@ -23,6 +23,12 @@ _JSON_BODY = re.compile(
     r"(?:\(\s*string\s*\)\s*)?\$request->getBody\s*\(\s*\)\s*,\s*true\s*\)",
     re.IGNORECASE | re.DOTALL,
 )
+_POST_FIELD = re.compile(r"\$_POST\s*\[\s*(?P<quote>['\"])(?P<field>[^'\"]+)(?P=quote)\s*\]")
+_FILES_FIELD = re.compile(r"\$_FILES\s*\[\s*(?P<quote>['\"])(?P<field>[^'\"]+)(?P=quote)\s*\]")
+_FUNCTION_DEFINITION = re.compile(
+    r"function\s+(?P<name>[A-Za-z_]\w*)\s*\((?P<params>[^)]*)\)\s*\{",
+    re.IGNORECASE | re.DOTALL,
+)
 _CONTENT_TYPE_JSON = re.compile(
     r"withHeader\s*\(\s*['\"]Content-Type['\"]\s*,\s*['\"]application/json['\"]\s*\)",
     re.IGNORECASE | re.DOTALL,
@@ -88,6 +94,17 @@ class _MiddlewareSource:
 
 
 @dataclass(frozen=True)
+class _FunctionSource:
+    name: str
+    parameters: tuple[str, ...]
+    file: Path
+    text: str
+    offset: int
+    body: str
+    body_start: int
+
+
+@dataclass(frozen=True)
 class _AuthenticationEvidence:
     authentication: str
     evidence: Evidence
@@ -99,6 +116,21 @@ class _Field:
     required: bool
     schema: dict[str, object]
     evidence: Evidence
+
+
+@dataclass
+class _RequestShape:
+    schema: dict[str, object]
+    fields: dict[str, _Field]
+    unresolved: list[ContractUnresolved]
+    used: bool = False
+    scalar_array: bool = False
+
+
+@dataclass(frozen=True)
+class _ParsedChain:
+    segments: tuple[str, ...]
+    dynamic: bool = False
 
 
 def _evidence(repository: Path, file: Path, text: str, offset: int, note: str) -> Evidence:
@@ -263,7 +295,18 @@ def _default_from_expression(expression: str) -> object:
 
 
 def _field_schema(expression: str, default: str | None = None) -> dict[str, object]:
-    schema = _schema_from_expression(expression)
+    cast = re.match(r"\s*\((?:int|integer|string|bool|boolean)\)", expression, re.IGNORECASE)
+    schema: dict[str, object]
+    if cast is None:
+        schema = _schema_from_expression(expression)
+    else:
+        cast_value = cast.group(0).lower()
+        if "int" in cast_value:
+            schema = {"type": "integer"}
+        elif "bool" in cast_value:
+            schema = {"type": "boolean"}
+        else:
+            schema = {"type": "string"}
     if default is not None:
         default_value = _default_from_expression(default)
         if default_value is not None or default.strip() in {"[]"}:
@@ -344,6 +387,42 @@ def _extract_middleware_definitions(files: list[Path]) -> dict[str, list[_Middle
     return definitions
 
 
+def _function_parameters(raw: str) -> tuple[str, ...]:
+    parameters: list[str] = []
+    for part in _split_top_level(raw):
+        match = re.search(r"(\$[A-Za-z_]\w*)", part)
+        if match is not None:
+            parameters.append(match.group(1))
+    return tuple(parameters)
+
+
+def _extract_function_definitions(files: list[Path]) -> dict[str, list[_FunctionSource]]:
+    definitions: dict[str, list[_FunctionSource]] = {}
+    for file in files:
+        if file.suffix.lower() != ".php":
+            continue
+        text = read_source(file)
+        if text is None or "function" not in text:
+            continue
+        masked = _mask_comments(text)
+        for match in _FUNCTION_DEFINITION.finditer(masked):
+            body_start = match.end()
+            body_end = _matching_delimiter(masked, body_start - 1, "{", "}")
+            if body_end is None:
+                continue
+            source = _FunctionSource(
+                name=match.group("name"),
+                parameters=_function_parameters(match.group("params")),
+                file=file,
+                text=text,
+                offset=match.start(),
+                body=masked[body_start:body_end],
+                body_start=body_start,
+            )
+            definitions.setdefault(source.name, []).append(source)
+    return definitions
+
+
 def _path_request(
     repository: Path,
     endpoint: EndpointFinding,
@@ -388,106 +467,418 @@ def _path_request(
     return parameters
 
 
+def _parse_chain(chain: str) -> _ParsedChain:
+    raw_segments = re.findall(r"\[\s*([^\]]+?)\s*\]", chain, re.DOTALL)
+    segments: list[str] = []
+    dynamic = False
+    for index, raw in enumerate(raw_segments):
+        value = raw.strip()
+        literal = _literal_string(value)
+        if literal is not None:
+            segments.append(f"property:{literal}")
+            continue
+        is_outer_index = index + 1 < len(raw_segments) and _literal_string(raw_segments[index + 1].strip()) is not None
+        follows_property = index > 0 and _literal_string(raw_segments[index - 1].strip()) is not None
+        is_positional = re.fullmatch(
+            r"\d+|\$?(?:i|j|k|idx|index|cc|tt|pp)",
+            value,
+            re.IGNORECASE,
+        ) is not None
+        if is_outer_index or follows_property or is_positional:
+            segments.append("index")
+            continue
+        segments.append("dynamic")
+        dynamic = True
+    return _ParsedChain(tuple(segments), dynamic)
+
+
+def _merge_dict_schema(target: dict[str, object], source: dict[str, object]) -> None:
+    for key, value in source.items():
+        if key == "x-asgard-evidence":
+            existing = target.setdefault(key, [])
+            if isinstance(existing, list) and isinstance(value, list):
+                existing.extend(item for item in value if item not in existing)
+            continue
+        existing_mapping = target.get(key)
+        if key in {"properties", "items"} and isinstance(existing_mapping, dict) and isinstance(value, dict):
+            _merge_dict_schema(existing_mapping, value)
+            continue
+        if key == "required" and isinstance(target.get(key), list) and isinstance(value, list):
+            required = target[key]
+            assert isinstance(required, list)
+            required.extend(item for item in value if item not in required)
+            continue
+        if key not in target:
+            target[key] = value
+
+
+def _merge_schema_path(
+    root: dict[str, object],
+    segments: tuple[str, ...],
+    schema: dict[str, object],
+    evidence: Evidence,
+    *,
+    required: bool,
+) -> str | None:
+    current = root
+    for index, segment in enumerate(segments):
+        if segment == "index":
+            current["type"] = "array"
+            items = current.setdefault("items", {})
+            if not isinstance(items, dict):
+                return None
+            current = items
+            continue
+        if segment == "dynamic":
+            return None
+        name = segment.removeprefix("property:")
+        current["type"] = "object"
+        properties = current.setdefault("properties", {})
+        if not isinstance(properties, dict):
+            return None
+        field_schema = properties.setdefault(name, {})
+        if not isinstance(field_schema, dict):
+            return None
+        required_values = current.setdefault("required", []) if required else None
+        if isinstance(required_values, list) and name not in {str(item) for item in required_values}:
+            required_values.append(name)
+        if index == len(segments) - 1:
+            _merge_dict_schema(field_schema, _schema_with_evidence(schema, evidence))
+            return name
+        current = field_schema
+    if segments and segments[-1] == "index":
+        root["type"] = "array"
+    return None
+
+
+def _dynamic_request_unresolved(
+    repository: Path,
+    source: _RouteSource | _FunctionSource,
+    offset: int,
+) -> ContractUnresolved:
+    return ContractUnresolved(
+        code="slim_php_request_body_dynamic",
+        message="JSON request body is accessed with a dynamic key and cannot be fully reconstructed.",
+        evidence=(
+            _evidence(
+                repository,
+                source.file,
+                source.text,
+                source.body_start + offset,
+                "dynamic JSON request body key",
+            ),
+        ),
+    )
+
+
+def _request_unresolved(
+    repository: Path,
+    source: _RouteSource | _FunctionSource,
+    offset: int,
+    message: str,
+    note: str,
+) -> ContractUnresolved:
+    return ContractUnresolved(
+        code="slim_php_request_body_unresolved",
+        message=message,
+        evidence=(
+            _evidence(
+                repository,
+                source.file,
+                source.text,
+                source.body_start + offset,
+                note,
+            ),
+        ),
+    )
+
+
+def _scan_request_accesses(
+    repository: Path,
+    source: _RouteSource | _FunctionSource,
+    root_paths: dict[str, tuple[str, ...]],
+) -> _RequestShape:
+    shape = _RequestShape(schema={}, fields={}, unresolved=[])
+    aliases = dict(root_paths)
+    foreach_arrays: list[tuple[tuple[str, ...], int]] = []
+    changed = True
+    while changed:
+        changed = False
+        for variable, prefix in list(aliases.items()):
+            alias_pattern = re.compile(
+                rf"(?P<alias>\$[A-Za-z_]\w*)\s*=\s*{re.escape(variable)}(?P<chain>(?:\s*\[[^\]]+\])*)\s*;",
+                re.DOTALL,
+            )
+            for match in alias_pattern.finditer(source.body):
+                alias = match.group("alias")
+                parsed = _parse_chain(match.group("chain") or "")
+                if parsed.dynamic:
+                    continue
+                resolved = prefix + parsed.segments
+                if aliases.get(alias) != resolved:
+                    aliases[alias] = resolved
+                    changed = True
+            foreach_pattern = re.compile(
+                rf"foreach\s*\(\s*{re.escape(variable)}\s+as\s+"
+                r"(?:(?:\$[A-Za-z_]\w*)\s*=>\s*)?(?P<alias>\$[A-Za-z_]\w*)\s*\)",
+                re.IGNORECASE,
+            )
+            for match in foreach_pattern.finditer(source.body):
+                alias = match.group("alias")
+                resolved = prefix + ("index",)
+                foreach_arrays.append((resolved, match.start()))
+                if aliases.get(alias) != resolved:
+                    aliases[alias] = resolved
+                    changed = True
+
+    for prefix, offset in foreach_arrays:
+        _merge_schema_path(
+            shape.schema,
+            prefix,
+            {},
+            _evidence(repository, source.file, source.text, source.body_start + offset, "JSON request array iteration"),
+            required=True,
+        )
+        shape.used = True
+        shape.scalar_array = True
+
+    matches: list[tuple[int, str, tuple[str, ...], bool, dict[str, object], Evidence]] = []
+    for variable, prefix in aliases.items():
+        access = re.compile(
+            rf"(?P<cast>\((?:int|integer|string|bool|boolean)\)\s*)?"
+            rf"{re.escape(variable)}(?P<chain>(?:\s*\[[^\]]+\])+)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        for match in access.finditer(source.body):
+            parsed = _parse_chain(match.group("chain"))
+            if parsed.dynamic:
+                shape.unresolved.append(_dynamic_request_unresolved(repository, source, match.start()))
+                shape.used = True
+                continue
+            segments = prefix + parsed.segments
+            default_match = re.match(r"\s*\?\?\s*(?P<default>[^;\n,\)]+)", source.body[match.end() :])
+            required = default_match is None
+            expression = f"{match.group('cast') or ''}{variable}{match.group('chain')}"
+            schema = _field_schema(expression, default_match.group("default") if default_match else None)
+            evidence = _evidence(
+                repository,
+                source.file,
+                source.text,
+                source.body_start + match.start(),
+                (
+                    "optional JSON request property with literal default"
+                    if default_match
+                    else "JSON request property access"
+                ),
+            )
+            matches.append((match.start(), variable, segments, required, schema, evidence))
+
+    for _offset, _variable, segments, required, schema, evidence in sorted(matches):
+        if not segments:
+            continue
+        if segments[-1] == "index":
+            _merge_schema_path(shape.schema, segments, schema, evidence, required=required)
+            shape.used = True
+            shape.scalar_array = True
+            continue
+        field_name = _merge_schema_path(
+            shape.schema,
+            segments,
+            schema,
+            evidence,
+            required=required,
+        )
+        if field_name is not None:
+            existing = shape.fields.get(field_name)
+            if existing is None or (existing.required is False and required):
+                shape.fields[field_name] = _Field(field_name, required, schema, evidence)
+            shape.used = True
+
+    return shape
+
+
+def _function_calls(body: str) -> list[tuple[str, list[str], int]]:
+    calls: list[tuple[str, list[str], int]] = []
+    pattern = re.compile(r"(?<!->)(?<!::)\b(?P<name>[A-Za-z_]\w*)\s*\(", re.IGNORECASE)
+    ignored = {
+        "array",
+        "count",
+        "json_decode",
+        "json_encode",
+        "foreach",
+        "if",
+        "while",
+        "for",
+        "switch",
+        "function",
+    }
+    for match in pattern.finditer(body):
+        name = match.group("name")
+        if name.lower() in ignored:
+            continue
+        open_offset = body.find("(", match.start())
+        close = _matching_delimiter(body, open_offset, "(", ")")
+        if close is None:
+            continue
+        calls.append((name, _split_top_level(body[open_offset + 1 : close]), match.start()))
+    return calls
+
+
+def _argument_root_path(argument: str, aliases: dict[str, tuple[str, ...]]) -> tuple[str, tuple[str, ...]] | None:
+    stripped = argument.strip()
+    match = re.fullmatch(r"(?P<variable>\$[A-Za-z_]\w*)(?P<chain>(?:\s*\[[^\]]+\])*)", stripped, re.DOTALL)
+    if match is None:
+        return None
+    variable = match.group("variable")
+    if variable not in aliases:
+        return None
+    parsed = _parse_chain(match.group("chain") or "")
+    if parsed.dynamic:
+        return None
+    return variable, aliases[variable] + parsed.segments
+
+
+def _multipart_body(repository: Path, source: _RouteSource) -> RequestFinding | None:
+    fields: dict[str, _Field] = {}
+    schema: dict[str, object] = {"type": "object", "properties": {}}
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    for pattern, field_schema, note in (
+        (_POST_FIELD, {"type": "string"}, "multipart form field"),
+        (_FILES_FIELD, {"type": "string", "format": "binary"}, "multipart file field"),
+    ):
+        for match in pattern.finditer(source.body):
+            name = match.group("field")
+            evidence = _evidence(repository, source.file, source.text, source.body_start + match.start(), note)
+            properties[name] = _schema_with_evidence(field_schema, evidence)
+            fields[name] = _Field(name, True, field_schema, evidence)
+    if not fields:
+        return None
+    schema["required"] = sorted(fields)
+    return RequestFinding(
+        content_type="multipart/form-data",
+        body_schema=schema,
+        fields=sorted(fields),
+    )
+
+
 def _request_body(
     repository: Path,
     source: _RouteSource,
+    function_definitions: dict[str, list[_FunctionSource]],
 ) -> tuple[RequestFinding | None, list[ContractUnresolved], bool, bool]:
+    multipart = _multipart_body(repository, source)
+    if multipart is not None:
+        return multipart, [], True, True
+
     body_match = _JSON_BODY.search(source.body)
     if body_match is None:
         return None, [], False, False
 
     variable = body_match.group("var")
-    access = rf"{re.escape(variable)}\s*\[\s*['\"](?P<field>[A-Za-z_][A-Za-z0-9_]*)['\"]\s*\]"
-    dynamic = re.search(rf"{re.escape(variable)}\s*\[\s*(?!['\"])", source.body)
     unresolved: list[ContractUnresolved] = []
-    if dynamic is not None:
-        unresolved.append(
-            ContractUnresolved(
-                code="slim_php_request_body_dynamic",
-                message="JSON request body is accessed with a dynamic key and cannot be fully reconstructed.",
-                evidence=(
-                    _evidence(
-                        repository,
-                        source.file,
-                        source.text,
-                        source.body_start + dynamic.start(),
-                        "dynamic JSON request body key",
-                    ),
-                ),
-            )
-        )
+    root_paths = {variable: ()}
+    shape = _scan_request_accesses(repository, source, root_paths)
+    unresolved.extend(shape.unresolved)
 
-    fields: dict[str, _Field] = {}
-    optional = re.compile(rf"(?P<cast>\((?:int|integer|string|bool|boolean)\)\s*)?{access}\s*\?\?\s*(?P<default>[^;\n,\)]+)", re.IGNORECASE)
-    optional_spans: list[tuple[int, int]] = []
-    for match in optional.finditer(source.body):
-        optional_spans.append(match.span())
-        name = match.group("field")
-        expression = f"{match.group('cast') or ''}{variable}['{name}']"
-        default = match.group("default")
-        evidence = _evidence(
-            repository,
-            source.file,
-            source.text,
-            source.body_start + match.start(),
-            "optional JSON request property with literal default",
-        )
-        fields.setdefault(name, _Field(name, False, _field_schema(expression, default), evidence))
+    aliases = {variable: ()}
+    for match in re.finditer(
+        rf"(?P<alias>\$[A-Za-z_]\w*)\s*=\s*{re.escape(variable)}(?P<chain>(?:\s*\[[^\]]+\])*)\s*;",
+        source.body,
+        re.DOTALL,
+    ):
+        parsed = _parse_chain(match.group("chain") or "")
+        if not parsed.dynamic:
+            aliases[match.group("alias")] = parsed.segments
 
-    direct = re.compile(rf"(?P<cast>\((?:int|integer|string|bool|boolean)\)\s*)?{access}", re.IGNORECASE)
-    for match in direct.finditer(source.body):
-        if any(start <= match.start() < end for start, end in optional_spans):
+    function_used = False
+    for name, arguments, offset in _function_calls(source.body):
+        definitions = function_definitions.get(name)
+        if definitions is None:
             continue
-        name = match.group("field")
-        cast = (match.group("cast") or "").lower()
-        schema: dict[str, object] = {}
-        if "int" in cast:
-            schema["type"] = "integer"
-        elif "bool" in cast:
-            schema["type"] = "boolean"
-        elif "string" in cast:
-            schema["type"] = "string"
-        evidence = _evidence(
-            repository,
-            source.file,
-            source.text,
-            source.body_start + match.start(),
-            "required JSON request property access",
-        )
-        previous = fields.get(name)
-        if previous is None or previous.required is False:
-            fields[name] = _Field(name, True, schema, evidence)
-
-    if not fields:
-        unresolved.append(
-            ContractUnresolved(
-                code="slim_php_request_body_unresolved",
-                message="JSON request body is decoded but no supported literal property access was found.",
-                evidence=(
-                    _evidence(
+        for position, argument in enumerate(arguments):
+            mapped = _argument_root_path(argument, aliases)
+            if mapped is None:
+                continue
+            if any(segment.startswith("property:") for segment in mapped[1]):
+                continue
+            function_used = True
+            if len(definitions) != 1:
+                unresolved.append(
+                    _request_unresolved(
                         repository,
-                        source.file,
-                        source.text,
-                        source.body_start + body_match.start(),
-                        "JSON request body decode",
-                    ),
-                ),
+                        source,
+                        offset,
+                        (
+                            f"JSON request body is passed to local function {name} but "
+                            "the function definition is not unique."
+                        ),
+                        "ambiguous local function request propagation",
+                    )
+                )
+                continue
+            definition = definitions[0]
+            if position >= len(definition.parameters):
+                unresolved.append(
+                    _request_unresolved(
+                        repository,
+                        source,
+                        offset,
+                        (
+                            f"JSON request body is passed to local function {name} but "
+                            "the target parameter cannot be identified."
+                        ),
+                        "unsupported local function request propagation",
+                    )
+                )
+                continue
+            parameter = definition.parameters[position]
+            propagated = _scan_request_accesses(
+                repository,
+                definition,
+                {parameter: mapped[1]},
+            )
+            unresolved.extend(propagated.unresolved)
+            if not propagated.used:
+                unresolved.append(
+                    _request_unresolved(
+                        repository,
+                        definition,
+                        0,
+                        (
+                            f"JSON request body reaches local function {name} but no supported "
+                            "literal request access was found there."
+                        ),
+                        "local function request propagation",
+                    )
+                )
+                continue
+            _merge_dict_schema(shape.schema, propagated.schema)
+            shape.fields.update(propagated.fields)
+            shape.used = True
+            shape.scalar_array = shape.scalar_array or propagated.scalar_array
+
+    if not shape.used and not function_used:
+        return None, [], False, False
+
+    if not shape.schema and unresolved:
+        return None, unresolved, True, False
+    if not shape.schema:
+        unresolved.append(
+            _request_unresolved(
+                repository,
+                source,
+                body_match.start(),
+                "JSON request body is decoded but no supported literal property access was found.",
+                "JSON request body decode",
             )
         )
         return None, unresolved, True, False
 
-    properties = {
-        name: _schema_with_evidence(field.schema, field.evidence)
-        for name, field in sorted(fields.items())
-    }
-    required = sorted(name for name, field in fields.items() if field.required)
-    schema: dict[str, object] = {"type": "object", "properties": properties}
-    if required:
-        schema["required"] = required
     request = RequestFinding(
         content_type="application/json",
-        body_schema=schema,
-        fields=sorted(fields),
+        body_schema=shape.schema,
+        fields=sorted(shape.fields),
     )
     return request, unresolved, True, not unresolved
 
@@ -860,6 +1251,7 @@ def enrich_slim_php_contracts(
     unresolved: list[ContractUnresolved] = []
     routes = _extract_routes(repository, files)
     middleware_definitions = _extract_middleware_definitions(files)
+    function_definitions = _extract_function_definitions(files)
 
     for endpoint in exposed:
         source = routes.get((endpoint.method, endpoint.path))
@@ -873,7 +1265,7 @@ def enrich_slim_php_contracts(
             continue
 
         request, request_unresolved, request_applicable, request_enriched = _request_body(
-            repository, source
+            repository, source, function_definitions
         )
         if request_applicable:
             coverage.request_enrichment_applicable += 1

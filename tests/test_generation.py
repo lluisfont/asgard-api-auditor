@@ -126,7 +126,7 @@ class GenerationTests(unittest.TestCase):
             payload = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["status"], "partial")
             ids = {item["unresolved_id"] for item in payload["unresolved"]}
-            self.assertIn("contract-enrichment-v0.5.2-coverage-gate", ids)
+            self.assertIn("contract-enrichment-v0.5.3-coverage-gate", ids)
             exposed = [item for item in payload["endpoints"] if item["direction"] == "exposed"]
             self.assertEqual(len(exposed), 1)
             self.assertIn("request", exposed[0])
@@ -412,6 +412,281 @@ class GenerationTests(unittest.TestCase):
             )
             self.assertNotIn("request", endpoint)
             self.assertNotIn("response", endpoint)
+
+    def test_unused_json_decode_is_not_request_applicable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->post('/unused', function($request, $response, $args) {\n"
+                "    $params = json_decode((string) $request->getBody(), true);\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            endpoint = next(
+                item
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/unused"
+            )
+            descriptions = [item["description"] for item in findings["unresolved"]]
+
+            self.assertNotIn("request", endpoint)
+            self.assertEqual(
+                findings["coverage"]["contract_enrichment"]["request_enrichment_applicable"],
+                0,
+            )
+            self.assertFalse(any("slim_php_request_body" in item for item in descriptions))
+
+    def test_decoded_var_passed_to_function_is_not_unused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "function forward($payload) { return true; }\n"
+                "$app->post('/forward', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    forward($params);\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            descriptions = [item["description"] for item in findings["unresolved"]]
+
+            self.assertEqual(
+                findings["coverage"]["contract_enrichment"]["request_enrichment_applicable"],
+                1,
+            )
+            self.assertEqual(findings["coverage"]["contract_enrichment"]["request_enriched"], 0)
+            self.assertTrue(any("local function forward" in item for item in descriptions))
+
+    def test_top_level_scalar_json_array(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->post('/ids', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    for ($i = 0; $i < count($params); $i++) { $id = $params[$i]; }\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            endpoint = next(
+                item
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/ids"
+            )
+
+            self.assertEqual(endpoint["request"]["body_schema"]["type"], "array")
+            self.assertIn("items", endpoint["request"]["body_schema"])
+            self.assertEqual(findings["coverage"]["contract_enrichment"]["request_enriched"], 1)
+
+    def test_array_object_and_single_quote_access(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->post('/items', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    for ($i = 0; $i < count($params); $i++) {\n"
+                "        $sku = $params[$i]['sku'];\n"
+                "        $qty = (int) $params[$i][\"quantity\"];\n"
+                "    }\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            schema = next(
+                item["request"]["body_schema"]
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/items"
+            )
+            properties = schema["items"]["properties"]
+
+            self.assertEqual(schema["type"], "array")
+            self.assertIn("sku", properties)
+            self.assertEqual(properties["quantity"]["type"], "integer")
+
+    def test_element_alias_and_foreach_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->post('/aliases', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    $first = $params[0];\n"
+                "    $firstName = $first['name'];\n"
+                "    foreach ($params as $item) { $code = $item[\"code\"]; }\n"
+                "    $copy = $params;\n"
+                "    foreach ($copy as $entry) { $label = $entry['label']; }\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            schema = next(
+                item["request"]["body_schema"]
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/aliases"
+            )
+            properties = schema["items"]["properties"]
+
+            self.assertIn("name", properties)
+            self.assertIn("code", properties)
+            self.assertIn("label", properties)
+
+    def test_nested_json_array_object_access(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->post('/nested', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    $quantity = (int) $params[$i][\"detail\"][$j][\"quantity\"];\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            schema = next(
+                item["request"]["body_schema"]
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/nested"
+            )
+            quantity = schema["items"]["properties"]["detail"]["items"]["properties"]["quantity"]
+
+            self.assertEqual(schema["type"], "array")
+            self.assertEqual(schema["items"]["properties"]["detail"]["type"], "array")
+            self.assertEqual(quantity["type"], "integer")
+
+    def test_unique_local_positional_request_propagation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "function enviarmailfactura($correosarray) {\n"
+                "    foreach ($correosarray as $cc => $correoitem) {\n"
+                "        $correo = $correosarray[$cc][\"correo\"];\n"
+                "    }\n"
+                "}\n"
+                "$app->post('/migrarovp', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    enviarmailfactura($params);\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            schema = next(
+                item["request"]["body_schema"]
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/migrarovp"
+            )
+
+            self.assertIn("correo", schema["items"]["properties"])
+            self.assertEqual(findings["coverage"]["contract_enrichment"]["request_enriched"], 1)
+
+    def test_ambiguous_local_positional_request_propagation_unresolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "function enviar($payload) { $mail = $payload[$i]['correo']; }\n"
+                "function enviar($payload) { return true; }\n"
+                "$app->post('/ambiguous', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    enviar($params);\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            descriptions = [item["description"] for item in findings["unresolved"]]
+
+            self.assertEqual(findings["coverage"]["contract_enrichment"]["request_enriched"], 0)
+            self.assertTrue(any("function enviar" in item and "not unique" in item for item in descriptions))
+
+    def test_multipart_post_and_files_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->post('/salidas', function($request, $response, $args) {\n"
+                "    $idcliente = $_POST['idcliente'];\n"
+                "    $documento = $_FILES[\"documento\"];\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            request = next(
+                item["request"]
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/salidas"
+            )
+
+            self.assertEqual(request["content_type"], "multipart/form-data")
+            self.assertEqual(request["body_schema"]["properties"]["documento"]["format"], "binary")
+            self.assertIn("idcliente", request["body_schema"]["properties"])
+
+    def test_multipart_wins_over_unused_json_decode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->post('/upload', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    $name = $_POST['name'];\n"
+                "    $file = $_FILES['file'];\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            request = next(
+                item["request"]
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/upload"
+            )
+            descriptions = [item["description"] for item in findings["unresolved"]]
+
+            self.assertEqual(request["content_type"], "multipart/form-data")
+            self.assertFalse(any("slim_php_request_body" in item for item in descriptions))
 
     def test_canonical_openapi_mapping_survives_contract_enrichment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
