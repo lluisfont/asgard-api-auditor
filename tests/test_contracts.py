@@ -25,6 +25,11 @@ class ContractTests(unittest.TestCase):
         self.assertIn("inventory_complete", coverage_required)
         self.assertIn("required_detector_categories", coverage_required)
         self.assertIn("unsupported_surfaces", coverage_required)
+        coverage_properties = schema["$defs"]["coverage"]["properties"]
+        self.assertIn("contract_enrichment", coverage_properties)
+        enrichment_required = schema["$defs"]["contractEnrichmentCoverage"]["required"]
+        self.assertIn("request_enriched", enrichment_required)
+        self.assertIn("unresolved_contract_enrichment", enrichment_required)
 
     def test_openapi_template_uses_approved_version(self) -> None:
         text = (ROOT / "templates/openapi.yaml").read_text(encoding="utf-8")

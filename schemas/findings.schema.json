@@ -124,8 +124,37 @@
         "files_excluded": {"type": "integer", "minimum": 0},
         "exclusion_rules": {"type": "array", "items": {"type": "string"}},
         "unsupported_surfaces": {"type": "array", "items": {"type": "string"}},
+        "contract_enrichment": {"$ref": "#/$defs/contractEnrichmentCoverage"},
         "notes": {"type": "array", "items": {"type": "string"}},
         "required_detector_categories": {"type": "array", "items": {"enum": ["inventory", "exposed", "consumed", "framework", "configuration", "existing_spec", "integration"]}}
+      },
+      "additionalProperties": false
+    },
+    "contractEnrichmentCoverage": {
+      "type": "object",
+      "required": [
+        "total_exposed_endpoints",
+        "path_parameters_applicable",
+        "path_parameters_enriched",
+        "request_enrichment_applicable",
+        "request_enriched",
+        "response_enrichment_applicable",
+        "response_enriched",
+        "security_enrichment_applicable",
+        "security_enriched",
+        "unresolved_contract_enrichment"
+      ],
+      "properties": {
+        "total_exposed_endpoints": {"type": "integer", "minimum": 0},
+        "path_parameters_applicable": {"type": "integer", "minimum": 0},
+        "path_parameters_enriched": {"type": "integer", "minimum": 0},
+        "request_enrichment_applicable": {"type": "integer", "minimum": 0},
+        "request_enriched": {"type": "integer", "minimum": 0},
+        "response_enrichment_applicable": {"type": "integer", "minimum": 0},
+        "response_enriched": {"type": "integer", "minimum": 0},
+        "security_enrichment_applicable": {"type": "integer", "minimum": 0},
+        "security_enriched": {"type": "integer", "minimum": 0},
+        "unresolved_contract_enrichment": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": false
     },
