@@ -413,6 +413,86 @@ class GenerationTests(unittest.TestCase):
             self.assertNotIn("request", endpoint)
             self.assertNotIn("response", endpoint)
 
+    def test_dynamic_nested_request_index_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->post('/dynamic-nested', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    $runtimeKey = runtimeKey();\n"
+                "    $value = $params[$runtimeKey][\"field\"];\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            descriptions = [item["description"] for item in findings["unresolved"]]
+            endpoint = next(
+                item
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/dynamic-nested"
+            )
+
+            self.assertTrue(any("slim_php_request_body_dynamic" in item for item in descriptions))
+            self.assertNotIn("request", endpoint)
+
+    def test_named_index_without_loop_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->post('/no-loop-index', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    $value = $params[$i][\"field\"];\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            descriptions = [item["description"] for item in findings["unresolved"]]
+            endpoint = next(
+                item
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/no-loop-index"
+            )
+
+            self.assertTrue(any("slim_php_request_body_dynamic" in item for item in descriptions))
+            self.assertNotIn("request", endpoint)
+
+    def test_demonstrated_for_loop_index_resolves_array_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->post('/loop-index', function($request, $response, $args) {\n"
+                "    $params = json_decode($request->getBody(), true);\n"
+                "    for ($i=0; $i<count($params); $i++) { $field = $params[$i][\"field\"]; }\n"
+                "    return $response;\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            findings = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            schema = next(
+                item["request"]["body_schema"]
+                for item in findings["endpoints"]
+                if item["direction"] == "exposed" and item["path"] == "/loop-index"
+            )
+            descriptions = [item["description"] for item in findings["unresolved"]]
+
+            self.assertEqual(schema["type"], "array")
+            self.assertIn("field", schema["items"]["properties"])
+            self.assertFalse(any("slim_php_request_body_dynamic" in item for item in descriptions))
+
     def test_unused_json_decode_is_not_request_applicable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -564,7 +644,11 @@ class GenerationTests(unittest.TestCase):
                 "<?php\n"
                 "$app->post('/nested', function($request, $response, $args) {\n"
                 "    $params = json_decode($request->getBody(), true);\n"
-                "    $quantity = (int) $params[$i][\"detail\"][$j][\"quantity\"];\n"
+                "    for ($i = 0; $i < count($params); $i++) {\n"
+                "        for ($j = 0; $j < count($params[$i][\"detail\"]); $j++) {\n"
+                "            $quantity = (int) $params[$i][\"detail\"][$j][\"quantity\"];\n"
+                "        }\n"
+                "    }\n"
                 "    return $response;\n"
                 "});\n",
             )

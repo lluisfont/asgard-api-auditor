@@ -467,29 +467,180 @@ def _path_request(
     return parameters
 
 
-def _parse_chain(chain: str) -> _ParsedChain:
+def _parse_chain(
+    chain: str,
+    index_context: dict[tuple[str, ...], set[str]] | None = None,
+    *,
+    base_path: tuple[str, ...] = (),
+) -> _ParsedChain:
     raw_segments = re.findall(r"\[\s*([^\]]+?)\s*\]", chain, re.DOTALL)
     segments: list[str] = []
     dynamic = False
-    for index, raw in enumerate(raw_segments):
+    for raw in raw_segments:
         value = raw.strip()
         literal = _literal_string(value)
         if literal is not None:
             segments.append(f"property:{literal}")
             continue
-        is_outer_index = index + 1 < len(raw_segments) and _literal_string(raw_segments[index + 1].strip()) is not None
-        follows_property = index > 0 and _literal_string(raw_segments[index - 1].strip()) is not None
-        is_positional = re.fullmatch(
-            r"\d+|\$?(?:i|j|k|idx|index|cc|tt|pp)",
-            value,
-            re.IGNORECASE,
-        ) is not None
-        if is_outer_index or follows_property or is_positional:
+        if re.fullmatch(r"\d+", value) is not None:
+            segments.append("index")
+            continue
+        current_path = base_path + tuple(segments)
+        allowed_indexes = (index_context or {}).get(current_path, set())
+        if value in allowed_indexes:
             segments.append("index")
             continue
         segments.append("dynamic")
         dynamic = True
     return _ParsedChain(tuple(segments), dynamic)
+
+
+def _count_argument(expression: str) -> str | None:
+    stripped = expression.strip()
+    match = re.match(r"count\s*\(", stripped, re.IGNORECASE)
+    if match is None:
+        return None
+    open_offset = stripped.find("(", match.start())
+    close = _matching_delimiter(stripped, open_offset, "(", ")")
+    if close is None or stripped[close + 1 :].strip():
+        return None
+    return stripped[open_offset + 1 : close]
+
+
+def _for_loop_headers(body: str) -> list[str]:
+    headers: list[str] = []
+    for match in re.finditer(r"\bfor\s*\(", body, re.IGNORECASE):
+        open_offset = body.find("(", match.start())
+        close = _matching_delimiter(body, open_offset, "(", ")")
+        if close is not None:
+            headers.append(body[open_offset + 1 : close])
+    return headers
+
+
+def _expression_path(
+    expression: str,
+    aliases: dict[str, tuple[str, ...]],
+    index_context: dict[tuple[str, ...], set[str]],
+) -> tuple[str, ...] | None:
+    match = re.fullmatch(
+        r"\s*(?P<variable>\$[A-Za-z_]\w*)(?P<chain>(?:\s*\[[^\]]+\])*)\s*",
+        expression,
+        re.DOTALL,
+    )
+    if match is None:
+        return None
+    variable = match.group("variable")
+    if variable not in aliases:
+        return None
+    prefix = aliases[variable]
+    parsed = _parse_chain(match.group("chain") or "", index_context, base_path=prefix)
+    if parsed.dynamic:
+        return None
+    return prefix + parsed.segments
+
+
+def _increment_matches_variable(increment: str, variable: str) -> bool:
+    escaped = re.escape(variable)
+    patterns = (
+        rf"\+\+\s*{escaped}",
+        rf"{escaped}\s*\+\+",
+        rf"{escaped}\s*\+=\s*1",
+        rf"{escaped}\s*=\s*{escaped}\s*\+\s*1",
+    )
+    return any(re.fullmatch(pattern, increment.strip()) is not None for pattern in patterns)
+
+
+def _for_loop_index_bindings(
+    body: str,
+    aliases: dict[str, tuple[str, ...]],
+    index_context: dict[tuple[str, ...], set[str]],
+) -> list[tuple[tuple[str, ...], str]]:
+    bindings: list[tuple[tuple[str, ...], str]] = []
+    for header in _for_loop_headers(body):
+        parts = [part.strip() for part in header.split(";")]
+        if len(parts) != 3:
+            continue
+        init, condition, increment = parts
+        init_match = re.fullmatch(r"(?P<variable>\$[A-Za-z_]\w*)\s*=\s*0", init)
+        if init_match is None:
+            continue
+        variable = init_match.group("variable")
+        if not _increment_matches_variable(increment, variable):
+            continue
+        target_expression: str | None = None
+        left_less_than = re.fullmatch(rf"{re.escape(variable)}\s*<\s*(?P<count>.+)", condition, re.DOTALL)
+        if left_less_than is not None:
+            target_expression = _count_argument(left_less_than.group("count"))
+        else:
+            right_greater_than = re.fullmatch(rf"(?P<count>.+)\s*>\s*{re.escape(variable)}", condition, re.DOTALL)
+            if right_greater_than is not None:
+                target_expression = _count_argument(right_greater_than.group("count"))
+        if target_expression is None:
+            continue
+        target_path = _expression_path(target_expression, aliases, index_context)
+        if target_path is not None:
+            bindings.append((target_path, variable))
+    return bindings
+
+
+def _add_index_context(
+    index_context: dict[tuple[str, ...], set[str]],
+    path: tuple[str, ...],
+    variable: str,
+) -> bool:
+    values = index_context.setdefault(path, set())
+    if variable in values:
+        return False
+    values.add(variable)
+    return True
+
+
+def _request_context(
+    source: _RouteSource | _FunctionSource,
+    root_paths: dict[str, tuple[str, ...]],
+) -> tuple[dict[str, tuple[str, ...]], dict[tuple[str, ...], set[str]], list[tuple[tuple[str, ...], int]]]:
+    aliases = dict(root_paths)
+    index_context: dict[tuple[str, ...], set[str]] = {}
+    foreach_arrays: dict[tuple[tuple[str, ...], int], tuple[tuple[str, ...], int]] = {}
+    changed = True
+    while changed:
+        changed = False
+        for path, variable in _for_loop_index_bindings(source.body, aliases, index_context):
+            changed = _add_index_context(index_context, path, variable) or changed
+        for variable, prefix in list(aliases.items()):
+            alias_pattern = re.compile(
+                rf"(?P<alias>\$[A-Za-z_]\w*)\s*=\s*{re.escape(variable)}(?P<chain>(?:\s*\[[^\]]+\])*)\s*;",
+                re.DOTALL,
+            )
+            for match in alias_pattern.finditer(source.body):
+                alias = match.group("alias")
+                parsed = _parse_chain(match.group("chain") or "", index_context, base_path=prefix)
+                if parsed.dynamic:
+                    continue
+                resolved = prefix + parsed.segments
+                if aliases.get(alias) != resolved:
+                    aliases[alias] = resolved
+                    changed = True
+            foreach_pattern = re.compile(
+                rf"foreach\s*\(\s*{re.escape(variable)}(?P<chain>(?:\s*\[[^\]]+\])*)\s+as\s+"
+                r"(?:(?P<key>\$[A-Za-z_]\w*)\s*=>\s*)?(?P<alias>\$[A-Za-z_]\w*)\s*\)",
+                re.IGNORECASE | re.DOTALL,
+            )
+            for match in foreach_pattern.finditer(source.body):
+                parsed = _parse_chain(match.group("chain") or "", index_context, base_path=prefix)
+                if parsed.dynamic:
+                    continue
+                target_path = prefix + parsed.segments
+                alias = match.group("alias")
+                resolved = target_path + ("index",)
+                foreach_arrays[(resolved, match.start())] = (resolved, match.start())
+                key = match.group("key")
+                if key is not None:
+                    changed = _add_index_context(index_context, target_path, key) or changed
+                if aliases.get(alias) != resolved:
+                    aliases[alias] = resolved
+                    changed = True
+    return aliases, index_context, list(foreach_arrays.values())
 
 
 def _merge_dict_schema(target: dict[str, object], source: dict[str, object]) -> None:
@@ -599,37 +750,7 @@ def _scan_request_accesses(
     root_paths: dict[str, tuple[str, ...]],
 ) -> _RequestShape:
     shape = _RequestShape(schema={}, fields={}, unresolved=[])
-    aliases = dict(root_paths)
-    foreach_arrays: list[tuple[tuple[str, ...], int]] = []
-    changed = True
-    while changed:
-        changed = False
-        for variable, prefix in list(aliases.items()):
-            alias_pattern = re.compile(
-                rf"(?P<alias>\$[A-Za-z_]\w*)\s*=\s*{re.escape(variable)}(?P<chain>(?:\s*\[[^\]]+\])*)\s*;",
-                re.DOTALL,
-            )
-            for match in alias_pattern.finditer(source.body):
-                alias = match.group("alias")
-                parsed = _parse_chain(match.group("chain") or "")
-                if parsed.dynamic:
-                    continue
-                resolved = prefix + parsed.segments
-                if aliases.get(alias) != resolved:
-                    aliases[alias] = resolved
-                    changed = True
-            foreach_pattern = re.compile(
-                rf"foreach\s*\(\s*{re.escape(variable)}\s+as\s+"
-                r"(?:(?:\$[A-Za-z_]\w*)\s*=>\s*)?(?P<alias>\$[A-Za-z_]\w*)\s*\)",
-                re.IGNORECASE,
-            )
-            for match in foreach_pattern.finditer(source.body):
-                alias = match.group("alias")
-                resolved = prefix + ("index",)
-                foreach_arrays.append((resolved, match.start()))
-                if aliases.get(alias) != resolved:
-                    aliases[alias] = resolved
-                    changed = True
+    aliases, index_context, foreach_arrays = _request_context(source, root_paths)
 
     for prefix, offset in foreach_arrays:
         _merge_schema_path(
@@ -650,7 +771,7 @@ def _scan_request_accesses(
             re.IGNORECASE | re.DOTALL,
         )
         for match in access.finditer(source.body):
-            parsed = _parse_chain(match.group("chain"))
+            parsed = _parse_chain(match.group("chain"), index_context, base_path=prefix)
             if parsed.dynamic:
                 shape.unresolved.append(_dynamic_request_unresolved(repository, source, match.start()))
                 shape.used = True
@@ -724,7 +845,11 @@ def _function_calls(body: str) -> list[tuple[str, list[str], int]]:
     return calls
 
 
-def _argument_root_path(argument: str, aliases: dict[str, tuple[str, ...]]) -> tuple[str, tuple[str, ...]] | None:
+def _argument_root_path(
+    argument: str,
+    aliases: dict[str, tuple[str, ...]],
+    index_context: dict[tuple[str, ...], set[str]],
+) -> tuple[str, tuple[str, ...]] | None:
     stripped = argument.strip()
     match = re.fullmatch(r"(?P<variable>\$[A-Za-z_]\w*)(?P<chain>(?:\s*\[[^\]]+\])*)", stripped, re.DOTALL)
     if match is None:
@@ -732,10 +857,11 @@ def _argument_root_path(argument: str, aliases: dict[str, tuple[str, ...]]) -> t
     variable = match.group("variable")
     if variable not in aliases:
         return None
-    parsed = _parse_chain(match.group("chain") or "")
+    prefix = aliases[variable]
+    parsed = _parse_chain(match.group("chain") or "", index_context, base_path=prefix)
     if parsed.dynamic:
         return None
-    return variable, aliases[variable] + parsed.segments
+    return variable, prefix + parsed.segments
 
 
 def _multipart_body(repository: Path, source: _RouteSource) -> RequestFinding | None:
@@ -781,15 +907,7 @@ def _request_body(
     shape = _scan_request_accesses(repository, source, root_paths)
     unresolved.extend(shape.unresolved)
 
-    aliases = {variable: ()}
-    for match in re.finditer(
-        rf"(?P<alias>\$[A-Za-z_]\w*)\s*=\s*{re.escape(variable)}(?P<chain>(?:\s*\[[^\]]+\])*)\s*;",
-        source.body,
-        re.DOTALL,
-    ):
-        parsed = _parse_chain(match.group("chain") or "")
-        if not parsed.dynamic:
-            aliases[match.group("alias")] = parsed.segments
+    aliases, index_context, _foreach_arrays = _request_context(source, root_paths)
 
     function_used = False
     for name, arguments, offset in _function_calls(source.body):
@@ -797,7 +915,7 @@ def _request_body(
         if definitions is None:
             continue
         for position, argument in enumerate(arguments):
-            mapped = _argument_root_path(argument, aliases)
+            mapped = _argument_root_path(argument, aliases, index_context)
             if mapped is None:
                 continue
             if any(segment.startswith("property:") for segment in mapped[1]):
