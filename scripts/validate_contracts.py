@@ -12,6 +12,9 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from asgard_api_auditor.constants import (  # noqa: E402
+    API_CATALOG_SCHEMA_VERSION,
+    API_COMPATIBILITY_SCHEMA_VERSION,
+    CONSUMER_COMPATIBILITY_SCHEMA_VERSION,
     CORRELATIONS_SCHEMA_VERSION,
     ENDPOINT_DISCOVERY_SCHEMA_VERSION,
     FINDINGS_SCHEMA_VERSION,
@@ -157,6 +160,48 @@ def validate_correlations_schema() -> None:
     )
 
 
+def validate_v08_schemas() -> None:
+    catalog = json.loads((ROOT / "schemas" / "api-catalog.schema.json").read_text(encoding="utf-8"))
+    require(
+        catalog["properties"]["schema_version"].get("const") == API_CATALOG_SCHEMA_VERSION,
+        "api catalog schema version mismatch",
+    )
+    endpoint_required = set(catalog["$defs"]["endpoint"]["required"])
+    for key in ("endpoint_id", "api_id", "stable_identity", "direction", "method", "path_shape"):
+        require(key in endpoint_required, f"api catalog endpoint must require {key}")
+    stable_required = set(catalog["$defs"]["stableIdentity"]["required"])
+    require("api_id" not in stable_required, "stable identity must not require api_id")
+    require("schema_version" not in stable_required, "stable identity must not include schema version")
+
+    compatibility = json.loads(
+        (ROOT / "schemas" / "api-compatibility.schema.json").read_text(encoding="utf-8")
+    )
+    require(
+        compatibility["properties"]["schema_version"].get("const")
+        == API_COMPATIBILITY_SCHEMA_VERSION,
+        "api compatibility schema version mismatch",
+    )
+    require(
+        {"same", "additive", "breaking", "unknown"}.issubset(
+            set(compatibility["$defs"]["summary"]["properties"])
+        ),
+        "api compatibility summary must include required classifications",
+    )
+
+    consumer = json.loads(
+        (ROOT / "schemas" / "consumer-compatibility.schema.json").read_text(encoding="utf-8")
+    )
+    require(
+        consumer["properties"]["schema_version"].get("const")
+        == CONSUMER_COMPATIBILITY_SCHEMA_VERSION,
+        "consumer compatibility schema version mismatch",
+    )
+    require(
+        "required_dependencies" in consumer["$defs"]["summary"]["required"],
+        "consumer compatibility must track required dependencies",
+    )
+
+
 def validate_templates() -> None:
     shared_tokens = (
         "{{ audit_id }}",
@@ -192,6 +237,7 @@ def main() -> int:
         validate_inventory_schema,
         validate_discovery_schema,
         validate_correlations_schema,
+        validate_v08_schemas,
         validate_templates,
         validate_primary_contract,
     ]

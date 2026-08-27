@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -488,12 +489,14 @@ file_get_contents('https://consumer.example/local');
             root = Path(tmp)
             repo = _repo(root, routes)
             wheelhouse = root / "wheelhouse"
-            subprocess.run([sys.executable, "-m", "pip", "wheel", ".", "-w", str(wheelhouse)], cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True)
+            env = os.environ.copy()
+            env.pop("PYTHONPATH", None)
+            subprocess.run([sys.executable, "-m", "pip", "wheel", ".", "-w", str(wheelhouse)], cwd=Path(__file__).resolve().parents[1], env=env, check=True, capture_output=True, text=True)
             env_dir = root / "venv"
             venv.EnvBuilder(with_pip=True).create(env_dir)
             python = env_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
             wheel = next(wheelhouse.glob("asgard_api_auditor-*.whl"))
-            subprocess.run([str(python), "-m", "pip", "install", str(wheel)], check=True, capture_output=True, text=True)
+            subprocess.run([str(python), "-m", "pip", "install", str(wheel)], env=env, check=True, capture_output=True, text=True)
             runner = root / "runner"
             runner.mkdir()
             self.assertFalse((runner / "schemas").exists())
@@ -501,6 +504,7 @@ file_get_contents('https://consumer.example/local');
             proc = subprocess.run(
                 [str(python), "-m", "asgard_api_auditor.cli", "audit", str(repo), "--repository-id", "fixture", "--output", str(out)],
                 cwd=runner,
+                env=env,
                 capture_output=True,
                 text=True,
             )
@@ -510,6 +514,7 @@ file_get_contents('https://consumer.example/local');
             proc = subprocess.run(
                 [str(python), "-m", "asgard_api_auditor.cli", "correlate", "--findings", str(out / "findings.json"), "--output", str(corr)],
                 cwd=runner,
+                env=env,
                 capture_output=True,
                 text=True,
             )

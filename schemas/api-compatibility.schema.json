@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asgard.local/schemas/api-compatibility.schema.json",
+  "title": "ASGARD API Compatibility Report",
+  "type": "object",
+  "required": ["schema_version", "comparison_id", "auditor_version", "generated_at", "mode", "inputs", "scope", "summary", "gate", "records"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "comparison_id": {"type": "string", "minLength": 8},
+    "auditor_version": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "mode": {"const": "reference_candidate"},
+    "inputs": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}},
+    "scope": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}},
+    "summary": {"$ref": "#/$defs/summary"},
+    "gate": {"$ref": "#/$defs/gate"},
+    "records": {"type": "array", "items": {"$ref": "#/$defs/record"}}
+  },
+  "$defs": {
+    "any": {"type": ["object", "array", "string", "integer", "number", "boolean", "null"]},
+    "summary": {
+      "type": "object",
+      "required": ["same", "additive", "breaking", "unknown", "required_reference_endpoints", "excluded_reference_endpoints"],
+      "properties": {
+        "same": {"type": "integer", "minimum": 0},
+        "additive": {"type": "integer", "minimum": 0},
+        "breaking": {"type": "integer", "minimum": 0},
+        "unknown": {"type": "integer", "minimum": 0},
+        "required_reference_endpoints": {"type": "integer", "minimum": 0},
+        "excluded_reference_endpoints": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "gate": {
+      "type": "object",
+      "required": ["mode", "status"],
+      "properties": {
+        "mode": {"enum": ["report", "fail_on_breaking", "fail_closed"]},
+        "status": {"enum": ["passed", "failed"]}
+      },
+      "additionalProperties": false
+    },
+    "finding": {
+      "type": "object",
+      "required": ["classification", "code", "detail"],
+      "properties": {
+        "classification": {"enum": ["same", "additive", "breaking", "unknown"]},
+        "code": {"type": "string", "minLength": 1},
+        "detail": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "record": {
+      "type": "object",
+      "required": ["reference_endpoint_id", "candidate_endpoint_id", "method", "path_shape", "classification", "observed_equal", "artifact_equal", "required", "findings", "unknown_reasons", "evidence"],
+      "properties": {
+        "reference_endpoint_id": {"type": ["string", "null"]},
+        "candidate_endpoint_id": {"type": ["string", "null"]},
+        "method": {"type": "string", "minLength": 1},
+        "path_shape": {"type": "string", "minLength": 1},
+        "classification": {"enum": ["same", "additive", "breaking", "unknown"]},
+        "observed_equal": {"type": "boolean"},
+        "artifact_equal": {"type": "boolean"},
+        "required": {"type": "boolean"},
+        "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+        "unknown_reasons": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"type": "array", "items": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

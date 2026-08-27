@@ -38,6 +38,7 @@ _ALLOWED_FINDINGS_EVIDENCE = {
     "existing_spec",
     "webhook",
     "generated_sdk",
+    "integration",
     "unknown",
 }
 

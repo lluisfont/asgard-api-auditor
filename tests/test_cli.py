@@ -203,6 +203,126 @@ class CliTests(unittest.TestCase):
             self.assertTrue((output / "correlations.json").is_file())
             self.assertTrue((output / "api-relations.md").is_file())
 
+    def test_catalog_api_command_generates_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            findings = root / "findings.json"
+            findings.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "2.0",
+                        "audit_id": "audit-repo",
+                        "auditor_version": "0.8.0",
+                        "repository": "repo",
+                        "repository_id": "repo",
+                        "source_ref": "main",
+                        "source_commit": "a" * 40,
+                        "audit_timestamp": "2026-08-27T00:00:00+00:00",
+                        "status": "complete",
+                        "coverage": _findings_coverage(),
+                        "endpoints": [
+                            {
+                                "endpoint_id": "exposed-get-health",
+                                "direction": "exposed",
+                                "surface_type": "http",
+                                "method": "GET",
+                                "path": "/health",
+                                "confidence": "confirmed",
+                                "confidence_reason": "fixture",
+                                "evidence": [{"path": "api.ts", "line": 1, "kind": "route"}],
+                                "notes": [],
+                            }
+                        ],
+                        "integration_surfaces": [],
+                        "unresolved": [],
+                        "artifacts": {
+                            "openapi.yaml": {"status": "validated"},
+                            "api-knowledge.md": {"status": "validated"},
+                            "audit-report.md": {"status": "validated"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = root / "api-catalog.json"
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(["catalog-api", "--findings", str(findings), "--output", str(output)])
+            self.assertEqual(code, 0)
+            self.assertIn("API catalog written", stdout.getvalue())
+            self.assertTrue(output.is_file())
+
+    def test_compare_api_command_returns_partial_when_gate_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            findings = root / "findings.json"
+            findings.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "2.0",
+                        "audit_id": "audit-repo",
+                        "auditor_version": "0.8.0",
+                        "repository": "repo",
+                        "repository_id": "repo",
+                        "source_ref": "main",
+                        "source_commit": "a" * 40,
+                        "audit_timestamp": "2026-08-27T00:00:00+00:00",
+                        "status": "complete",
+                        "coverage": _findings_coverage(),
+                        "endpoints": [
+                            {
+                                "endpoint_id": "exposed-get-health",
+                                "direction": "exposed",
+                                "surface_type": "http",
+                                "method": "GET",
+                                "path": "/health",
+                                "confidence": "confirmed",
+                                "confidence_reason": "fixture",
+                                "evidence": [{"path": "api.ts", "line": 1, "kind": "route"}],
+                                "notes": [],
+                            }
+                        ],
+                        "integration_surfaces": [],
+                        "unresolved": [],
+                        "artifacts": {
+                            "openapi.yaml": {"status": "validated"},
+                            "api-knowledge.md": {"status": "validated"},
+                            "audit-report.md": {"status": "validated"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            self.assertEqual(main(["catalog-api", "--findings", str(findings), "--output", str(reference)]), 0)
+            candidate.write_text(
+                reference.read_text(encoding="utf-8").replace('"endpoints": [', '"endpoints": []\n  ,"removed": ['),
+                encoding="utf-8",
+            )
+            candidate_payload = json.loads(reference.read_text(encoding="utf-8"))
+            candidate_payload["catalog_id"] = "catalog-candidate"
+            candidate_payload["endpoints"] = []
+            candidate_payload["coverage"]["total_endpoints"] = 0
+            candidate_payload["coverage"]["included_endpoints"] = 0
+            candidate_payload["coverage"]["exposed_endpoints"] = 0
+            candidate.write_text(json.dumps(candidate_payload), encoding="utf-8")
+            output = root / "compatibility"
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main([
+                    "compare-api",
+                    str(reference),
+                    str(candidate),
+                    "--output",
+                    str(output),
+                    "--gate-mode",
+                    "fail_on_breaking",
+                ])
+            self.assertEqual(code, 3)
+            self.assertIn("failed", stdout.getvalue())
+            self.assertTrue((output / "api-compatibility.json").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

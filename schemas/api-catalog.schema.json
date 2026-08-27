@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asgard.local/schemas/api-catalog.schema.json",
+  "title": "ASGARD Canonical API Catalog",
+  "type": "object",
+  "required": ["schema_version", "catalog_id", "auditor_version", "generated_at", "metadata", "scope", "coverage", "endpoints", "unresolved", "input_hashes"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "catalog_id": {"type": "string", "minLength": 8},
+    "auditor_version": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "metadata": {"$ref": "#/$defs/metadata"},
+    "scope": {"$ref": "#/$defs/scope"},
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "endpoints": {"type": "array", "items": {"$ref": "#/$defs/endpoint"}},
+    "unresolved": {"type": "array", "items": {"type": "object"}},
+    "input_hashes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/inputHash"}}
+  },
+  "$defs": {
+    "any": {"type": ["object", "array", "string", "integer", "number", "boolean", "null"]},
+    "metadata": {
+      "type": "object",
+      "required": ["repository", "repository_id", "source_ref", "source_commit", "findings_audit_id", "findings_schema_version", "findings_auditor_version", "findings_sha256", "stable_namespace"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "repository_id": {"type": "string", "minLength": 1},
+        "source_ref": {"type": "string", "minLength": 1},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-fA-F]{7,64}$"},
+        "findings_audit_id": {"type": "string", "minLength": 1},
+        "findings_schema_version": {"type": "string", "minLength": 1},
+        "findings_auditor_version": {"type": "string", "minLength": 1},
+        "findings_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "stable_namespace": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "required": ["mode", "include_endpoints", "exclude_endpoints", "included_endpoints", "excluded_endpoints"],
+      "properties": {
+        "mode": {"enum": ["all", "explicit"]},
+        "include_endpoints": {"type": "array", "items": {"type": "string"}},
+        "exclude_endpoints": {"type": "array", "items": {"type": "string"}},
+        "included_endpoints": {"type": "integer", "minimum": 0},
+        "excluded_endpoints": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["inventory_complete", "discovery_complete", "total_endpoints", "included_endpoints", "excluded_endpoints", "exposed_endpoints", "consumed_endpoints", "unresolved"],
+      "properties": {
+        "inventory_complete": {"type": "boolean"},
+        "discovery_complete": {"type": "boolean"},
+        "total_endpoints": {"type": "integer", "minimum": 0},
+        "included_endpoints": {"type": "integer", "minimum": 0},
+        "excluded_endpoints": {"type": "integer", "minimum": 0},
+        "exposed_endpoints": {"type": "integer", "minimum": 0},
+        "consumed_endpoints": {"type": "integer", "minimum": 0},
+        "unresolved": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "inputHash": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "stableIdentity": {
+      "type": "object",
+      "required": ["direction", "method", "path_shape"],
+      "properties": {
+        "direction": {"enum": ["exposed", "consumed"]},
+        "method": {"type": "string", "minLength": 1},
+        "path_shape": {"type": "string", "minLength": 1},
+        "stable_namespace": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "endpointScope": {
+      "type": "object",
+      "required": ["status", "selectors"],
+      "properties": {
+        "status": {"enum": ["included", "excluded"]},
+        "selectors": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "endpoint": {
+      "type": "object",
+      "required": ["endpoint_id", "api_id", "source_endpoint_id", "stable_identity", "direction", "surface_type", "method", "normalized_path", "path_shape", "base_url", "parameters", "request", "response", "headers", "authentication", "security", "behavior", "contract_status", "semantic_status", "confidence", "confidence_reason", "evidence", "unresolved", "notes", "scope", "source"],
+      "properties": {
+        "endpoint_id": {"type": "string", "minLength": 1},
+        "api_id": {"type": ["string", "null"]},
+        "source_endpoint_id": {"type": ["string", "null"]},
+        "stable_identity": {"$ref": "#/$defs/stableIdentity"},
+        "direction": {"enum": ["exposed", "consumed"]},
+        "surface_type": {"const": "http"},
+        "method": {"type": "string", "minLength": 1},
+        "normalized_path": {"type": "string", "minLength": 1},
+        "path_shape": {"type": "string", "minLength": 1},
+        "base_url": {"type": ["string", "null"]},
+        "parameters": {"type": "array", "items": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}},
+        "request": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}},
+        "response": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}},
+        "headers": {"type": "array", "items": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}},
+        "authentication": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}},
+        "security": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}},
+        "behavior": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}},
+        "contract_status": {"type": "string", "minLength": 1},
+        "semantic_status": {"type": "string", "minLength": 1},
+        "confidence": {"type": ["string", "null"]},
+        "confidence_reason": {"type": ["string", "null"]},
+        "evidence": {"type": "array", "items": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}},
+        "unresolved": {"type": "array", "items": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}},
+        "notes": {"type": "array", "items": {"type": "string"}},
+        "scope": {"$ref": "#/$defs/endpointScope"},
+        "source": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

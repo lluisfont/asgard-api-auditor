@@ -31,7 +31,7 @@
         "line": {"type": ["integer", "null"], "minimum": 1},
         "end_line": {"type": ["integer", "null"], "minimum": 1},
         "symbol": {"type": ["string", "null"]},
-        "kind": {"enum": ["route", "controller", "http_client", "configuration", "test", "documentation", "runtime", "existing_spec", "webhook", "generated_sdk", "unknown"]},
+        "kind": {"enum": ["route", "controller", "http_client", "configuration", "test", "documentation", "runtime", "existing_spec", "webhook", "generated_sdk", "integration", "unknown"]},
         "note": {"type": ["string", "null"]}
       },
       "additionalProperties": false
