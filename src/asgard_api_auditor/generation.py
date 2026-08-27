@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,7 +18,7 @@ from .discovery_types import DiscoveryIssue, EndpointDiscovery, IntegrationFindi
 from .discovery_utils import iter_source_files
 from .enrichment import ContractEnrichmentResult, ContractUnresolved, enrich_slim_php_contracts
 from .inventory import inventory_repository
-from .models import AuditTarget, EndpointFinding, Evidence, TechnicalInventory
+from .models import AuditStatus, AuditTarget, EndpointFinding, Evidence, TechnicalInventory
 from .path_normalization import ROUTE_PARAMETER, normalized_path_shape, path_parameter_names
 from .redaction import redact_text
 from .semantics import (
@@ -40,6 +40,14 @@ _ALLOWED_FINDINGS_EVIDENCE = {
     "generated_sdk",
     "unknown",
 }
+
+
+@dataclass(frozen=True)
+class _CompletionGate:
+    status: AuditStatus
+    contract_scope: str
+    correlation_scope: str
+    unresolved: list[dict[str, object]]
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -212,6 +220,101 @@ def _contract_status(endpoint: EndpointFinding) -> str:
         if note.startswith("contract_enrichment_status="):
             return note.split("=", 1)[1]
     return "pending"
+
+
+def _contract_scope(
+    discovery: EndpointDiscovery,
+    enrichment: ContractEnrichmentResult,
+) -> tuple[str, list[dict[str, object]]]:
+    exposed = [item for item in discovery.endpoints if item.direction == "exposed"]
+    if not exposed:
+        return "not_applicable", []
+    if enrichment.unresolved:
+        return "evaluated_partial", []
+
+    pending = [item for item in exposed if _contract_status(item) != "enriched"]
+    if not pending:
+        return "evaluated_complete", []
+
+    evidence = []
+    for endpoint in pending[:5]:
+        evidence.extend(_safe_evidence(item) for item in endpoint.evidence)
+    return "required_not_complete", [
+        {
+            "unresolved_id": "contract-enrichment-v0.7.0-coverage-gate",
+            "category": "schema",
+            "description": (
+                "Contract enrichment is applicable because exposed HTTP endpoints were found, "
+                "but one or more endpoint contracts remain pending."
+            ),
+            "impact": "blocking",
+            "evidence": evidence,
+        }
+    ]
+
+
+def _correlation_scope(
+    discovery: EndpointDiscovery,
+    *,
+    require_correlation: bool,
+) -> tuple[str, list[dict[str, object]]]:
+    consumed = [item for item in discovery.endpoints if item.direction == "consumed"]
+    if not require_correlation:
+        return "out_of_scope", []
+    if not consumed:
+        return "not_applicable", []
+    evidence = []
+    for endpoint in consumed[:5]:
+        evidence.extend(_safe_evidence(item) for item in endpoint.evidence)
+    return "required_not_evaluable", [
+        {
+            "unresolved_id": "provider-consumer-correlation-required-not-evaluable",
+            "category": "coverage",
+            "description": (
+                "Provider/consumer correlation was explicitly required for this audit, "
+                "but no correlation input artifacts were supplied to evaluate providers."
+            ),
+            "impact": "blocking",
+            "evidence": evidence,
+        }
+    ]
+
+
+def _completion_gate(
+    inventory: TechnicalInventory,
+    discovery: EndpointDiscovery,
+    enrichment: ContractEnrichmentResult,
+    semantics: SemanticEnrichmentResult,
+    *,
+    require_correlation: bool,
+) -> _CompletionGate:
+    contract_scope, contract_unresolved = _contract_scope(discovery, enrichment)
+    correlation_scope, correlation_unresolved = _correlation_scope(
+        discovery,
+        require_correlation=require_correlation,
+    )
+    unsupported_surfaces = sorted(
+        item.name for item in inventory.integration_surfaces if item.name != "soap"
+    )
+    status: AuditStatus = "complete"
+    if not inventory.inventory_complete:
+        status = "partial"
+    if not discovery.discovery_complete:
+        status = "partial"
+    if unsupported_surfaces:
+        status = "partial"
+    if any(detector.status != "supported" for detector in discovery.detectors):
+        status = "partial"
+    if discovery.unresolved or enrichment.unresolved or semantics.unresolved:
+        status = "partial"
+    if contract_unresolved or correlation_unresolved:
+        status = "partial"
+    return _CompletionGate(
+        status=status,
+        contract_scope=contract_scope,
+        correlation_scope=correlation_scope,
+        unresolved=[*contract_unresolved, *correlation_unresolved],
+    )
 
 
 def _render_fields(schema: dict[str, object] | None) -> str:
@@ -483,9 +586,22 @@ def _render_report(
     discovery: EndpointDiscovery,
     enrichment: ContractEnrichmentResult,
     semantics: SemanticEnrichmentResult,
+    gate: _CompletionGate,
 ) -> str:
     exposed = sum(1 for item in discovery.endpoints if item.direction == "exposed")
     consumed = sum(1 for item in discovery.endpoints if item.direction == "consumed")
+    verdict = (
+        "**COMPLETE** — all completion gates applicable to this audit scope passed with deterministic evidence."
+        if gate.status == "complete"
+        else (
+            "**FAILED** — one or more primary audit artifacts failed validation."
+            if gate.status == "failed"
+            else (
+                "**PARTIAL** — at least one applicable completion gate remains unresolved; "
+                "unknown behavior is not inferred."
+            )
+        )
+    )
     lines = [
         _front_matter(audit_id, discovery).rstrip(),
         "",
@@ -493,7 +609,7 @@ def _render_report(
         "",
         "## Verdict",
         "",
-        "**PARTIAL** — deterministic Slim/PHP contract enrichment is applied where source evidence supports it, but full behavioral audit completion remains gated.",
+        verdict,
         "",
         "## Proven surface",
         "",
@@ -501,6 +617,8 @@ def _render_report(
         f"- Consumed HTTP endpoints: **{consumed}**",
         f"- Integration findings: **{len(discovery.integrations)}**",
         f"- Discovery complete: **{str(discovery.discovery_complete).lower()}**",
+        f"- Contract enrichment scope: **{gate.contract_scope}**",
+        f"- Correlation scope: **{gate.correlation_scope}**",
         f"- Semantic complete: **{semantics.coverage.semantic_complete}/{semantics.coverage.total_exposed_endpoints}**",
         f"- Semantic unresolved findings: **{semantics.coverage.semantic_unresolved_count}**",
         "",
@@ -527,15 +645,19 @@ def _render_report(
         "",
         "## Blocking work before full audit completion",
         "",
-        "- Complete and validate contract enrichment coverage gates.",
-        "- Resolve any remaining dynamic request/response/security patterns.",
-        "- Generate and evaluate provider/consumer correlation artifacts before breaking-change gates.",
     ]
+    if gate.status == "complete":
+        lines.append("- No blocking work in the current audit scope.")
+    elif gate.contract_scope == "required_not_complete":
+        lines.append("- Complete contract enrichment for exposed provider endpoints.")
+    elif gate.contract_scope == "evaluated_partial":
+        lines.append("- Resolve contract-enrichment blocking findings listed below.")
+    if gate.correlation_scope == "required_not_evaluable":
+        lines.append("- Supply provider findings artifacts or run correlation separately for the required correlation gate.")
     if discovery.unresolved:
         lines.append("- Resolve discovery-level blocking findings listed below.")
         lines.extend(f"  - `{item.code}`: {item.message}" for item in discovery.unresolved)
     if enrichment.unresolved:
-        lines.append("- Resolve contract-enrichment blocking findings listed below.")
         lines.extend(f"  - `{item.code}`: {item.message}" for item in enrichment.unresolved)
     if semantics.unresolved:
         lines.append("- Resolve semantic-enrichment findings listed below.")
@@ -614,7 +736,7 @@ def _group_openapi_paths(
     return sorted(groups, key=lambda item: item[0])
 
 
-def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
+def _render_openapi(audit_id: str, discovery: EndpointDiscovery, contract_scope: str) -> str:
     exposed = [item for item in discovery.endpoints if item.direction == "exposed"]
     groups = _group_openapi_paths(exposed)
     has_bearer_auth = any(
@@ -632,7 +754,7 @@ def _render_openapi(audit_id: str, discovery: EndpointDiscovery) -> str:
         "  description: \"OpenAPI generated from source evidence; unknown request/response/security details are not inferred.\"",
         f'x-asgard-audit-id: "{audit_id}"',
         f'x-asgard-source-commit: "{discovery.source_commit}"',
-        "x-asgard-contract-enrichment: partial",
+        f"x-asgard-contract-enrichment: {contract_scope}",
     ]
     if has_bearer_auth or has_authorization_header_auth:
         lines.extend(
@@ -766,23 +888,13 @@ def _findings(
     discovery: EndpointDiscovery,
     enrichment: ContractEnrichmentResult,
     semantics: SemanticEnrichmentResult,
+    gate: _CompletionGate,
     artifact_hashes: dict[str, str],
 ) -> dict[str, object]:
     unresolved = [_unresolved_payload(item) for item in discovery.unresolved]
     unresolved.extend(_contract_unresolved_payload(item) for item in enrichment.unresolved)
     unresolved.extend(semantic_unresolved_payload(item) for item in semantics.unresolved)
-    unresolved.append(
-        {
-            "unresolved_id": "contract-enrichment-v0.7.0-coverage-gate",
-            "category": "schema",
-            "description": (
-                "Audit completion remains gated until deterministic contract enrichment coverage "
-                "and provider/consumer correlation artifacts are explicitly evaluated."
-            ),
-            "impact": "blocking",
-            "evidence": [],
-        }
-    )
+    unresolved.extend(gate.unresolved)
     unsupported_surfaces = sorted(
         item.name for item in inventory.integration_surfaces if item.name != "soap"
     )
@@ -795,7 +907,7 @@ def _findings(
         "source_ref": discovery.source_ref,
         "source_commit": discovery.source_commit,
         "audit_timestamp": datetime.now(UTC).isoformat(),
-        "status": "partial",
+        "status": gate.status,
         "coverage": {
             "inventory_complete": inventory.inventory_complete,
             "languages": sorted(item.name for item in inventory.languages),
@@ -811,7 +923,8 @@ def _findings(
             "semantic_enrichment": semantics.coverage.to_dict(),
             "notes": [
                 "Exact excluded-file count is not tracked in technical inventory v1.0.",
-                "Audit status remains partial until all completion gates are explicitly satisfied.",
+                f"contract_enrichment_scope={gate.contract_scope}",
+                f"correlation_scope={gate.correlation_scope}",
             ],
         },
         "endpoints": [_endpoint_payload(item) for item in discovery.endpoints],
@@ -834,6 +947,7 @@ def generate_audit(
     *,
     allow_dirty: bool = False,
     soap_wsdl: dict[str, Path] | None = None,
+    require_correlation: bool = False,
 ) -> tuple[Path, dict[str, object]]:
     """Generate and atomically publish the four primary audit artifacts."""
 
@@ -847,6 +961,13 @@ def generate_audit(
     semantics = enrich_slim_php_semantics(repository, discovery.endpoints, files, discovery.integrations)
     discovery.endpoints = semantics.endpoints
     audit_id = _audit_id(target, discovery, mappings)
+    gate = _completion_gate(
+        inventory,
+        discovery,
+        enrichment,
+        semantics,
+        require_correlation=require_correlation,
+    )
     destination = target.output.resolve()
 
     with tempfile.TemporaryDirectory(prefix="asgard-api-audit-") as temporary:
@@ -856,16 +977,16 @@ def generate_audit(
         report_path = staging / "audit-report.md"
         findings_path = staging / "findings.json"
 
-        openapi_path.write_text(_render_openapi(audit_id, discovery), encoding="utf-8")
+        openapi_path.write_text(_render_openapi(audit_id, discovery, gate.contract_scope), encoding="utf-8")
         knowledge_path.write_text(_render_knowledge(audit_id, discovery, enrichment, semantics), encoding="utf-8")
-        report_path.write_text(_render_report(audit_id, discovery, enrichment, semantics), encoding="utf-8")
+        report_path.write_text(_render_report(audit_id, discovery, enrichment, semantics, gate), encoding="utf-8")
 
         hashes = {
             "openapi.yaml": sha256_file(openapi_path),
             "api-knowledge.md": sha256_file(knowledge_path),
             "audit-report.md": sha256_file(report_path),
         }
-        findings = _findings(audit_id, inventory, discovery, enrichment, semantics, hashes)
+        findings = _findings(audit_id, inventory, discovery, enrichment, semantics, gate, hashes)
         findings_text = redact_text(json.dumps(findings, indent=2, sort_keys=True) + "\n")
         findings_path.write_text(findings_text, encoding="utf-8")
 
