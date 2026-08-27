@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1 - 2026-08-26
+
+### Fixed
+
+- Dart Dio consumer discovery now resolves proven typed Dio fields and typed dependency member chains such as `_api.dio.get(...)`.
+- Dio discovery now classifies candidates independently from resolved endpoints and fails closed when a Dio-like receiver cannot be proven from source evidence.
+
 ## 0.6.0 - 2026-08-26
 
 ### Added

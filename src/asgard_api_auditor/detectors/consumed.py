@@ -505,10 +505,95 @@ def _angular_httpclient(
     return endpoints, issues, scanned
 
 
-def _dio(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], list[DiscoveryIssue], int]:
-    endpoints: list[EndpointFinding] = []
-    issues: list[DiscoveryIssue] = []
-    scanned = 0
+@dataclass(frozen=True)
+class _DartClassFacts:
+    fields: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _DartClassRange:
+    name: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class _DartFunctionRange:
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class _DartCallCandidate:
+    receiver: str
+    method: str
+    url: str | None
+    offset: int
+
+
+def _dart_class_body(text: str, class_match: re.Match[str]) -> str:
+    open_brace = text.find("{", class_match.end())
+    if open_brace < 0:
+        return ""
+    close_brace = _matching_brace(text, open_brace)
+    if close_brace is None:
+        return text[open_brace + 1 :]
+    return text[open_brace + 1 : close_brace]
+
+
+def _dart_class_ranges(text: str) -> list[_DartClassRange]:
+    ranges: list[_DartClassRange] = []
+    for class_match in re.finditer(r"\bclass\s+(?P<name>[A-Z][A-Za-z0-9_]*)\b", text):
+        open_brace = text.find("{", class_match.end())
+        if open_brace < 0:
+            continue
+        close_brace = _matching_brace(text, open_brace)
+        if close_brace is None:
+            close_brace = len(text)
+        ranges.append(_DartClassRange(class_match.group("name"), open_brace + 1, close_brace))
+    return ranges
+
+
+def _dart_function_ranges(text: str) -> list[_DartFunctionRange]:
+    ranges: list[_DartFunctionRange] = []
+    declaration = re.compile(
+        r"(?:^|[;\}\n])\s*"
+        r"(?:[A-Za-z_<>,\?\[\]\s]+\s+)?"
+        r"(?P<name>_?[A-Za-z]\w*)\s*"
+        r"\([^;{}]*\)\s*(?:async\s*)?\{",
+        re.MULTILINE,
+    )
+    control_keywords = {"if", "for", "while", "switch", "catch", "do"}
+    for match in declaration.finditer(text):
+        if match.group("name") in control_keywords:
+            continue
+        open_brace = text.find("{", match.start())
+        if open_brace < 0:
+            continue
+        close_brace = _matching_brace(text, open_brace)
+        if close_brace is None:
+            close_brace = len(text)
+        ranges.append(_DartFunctionRange(open_brace + 1, close_brace))
+    return ranges
+
+
+def _dart_brace_depth(text: str, offset: int) -> int:
+    depth = 0
+    for char in text[:offset]:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+    return depth
+
+
+def _dart_class_facts(files: list[Path]) -> dict[str, _DartClassFacts]:
+    facts: dict[str, _DartClassFacts] = {}
+    field_pattern = re.compile(
+        r"^\s*(?:late\s+)?(?:final\s+)?(?P<type>[A-Z][A-Za-z0-9_]*)\??\s+"
+        r"(?P<name>_?[A-Za-z][A-Za-z0-9_]*)\s*(?:[;=,])",
+        re.MULTILINE,
+    )
     for path in files:
         if path.suffix.lower() != ".dart":
             continue
@@ -516,34 +601,205 @@ def _dio(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], li
         if text is None:
             continue
         masked = _mask_consumer_comments(path, text)
-        if "Dio" not in masked:
+        for class_range in _dart_class_ranges(masked):
+            body = masked[class_range.start : class_range.end]
+            if not body:
+                continue
+            fields = dict(facts.get(class_range.name, _DartClassFacts({})).fields)
+            for field in field_pattern.finditer(body):
+                if _dart_brace_depth(body, field.start()) != 0:
+                    continue
+                fields[field.group("name")] = field.group("type")
+            facts[class_range.name] = _DartClassFacts(fields)
+    return facts
+
+
+def _dart_enclosing_class(ranges: list[_DartClassRange], offset: int) -> _DartClassRange | None:
+    enclosing = [item for item in ranges if item.start <= offset <= item.end]
+    if not enclosing:
+        return None
+    return min(enclosing, key=lambda item: item.end - item.start)
+
+
+def _dart_enclosing_function(ranges: list[_DartFunctionRange], offset: int) -> _DartFunctionRange | None:
+    enclosing = [item for item in ranges if item.start <= offset <= item.end]
+    if not enclosing:
+        return None
+    return min(enclosing, key=lambda item: item.end - item.start)
+
+
+def _dart_dio_direct_receivers_before(masked: str, offset: int, scope_start: int) -> set[str]:
+    receivers: set[str] = set()
+    prefix = masked[scope_start:offset]
+    for match in re.finditer(
+        r"\b(?:final|var|late\s+final)\s+(?P<name>_?[A-Za-z]\w*)\s*=\s*Dio\s*\(",
+        prefix,
+    ):
+        receivers.add(match.group("name"))
+    for match in re.finditer(
+        r"^\s*(?:late\s+)?(?:final\s+)?Dio\??\s+(?P<name>_?[A-Za-z]\w*)\s*(?:[;=,])",
+        prefix,
+        re.MULTILINE,
+    ):
+        receivers.add(match.group("name"))
+        receivers.add(f"this.{match.group('name')}")
+    return receivers
+
+
+def _dart_top_level_dio_receivers_before(masked: str, offset: int) -> set[str]:
+    receivers: set[str] = set()
+    for match in re.finditer(
+        r"\b(?:final|var|late\s+final)\s+(?P<name>_?[A-Za-z]\w*)\s*=\s*Dio\s*\(",
+        masked[:offset],
+    ):
+        if _dart_brace_depth(masked, match.start()) == 0:
+            receivers.add(match.group("name"))
+    for match in re.finditer(
+        r"^\s*(?:late\s+)?(?:final\s+)?Dio\??\s+(?P<name>_?[A-Za-z]\w*)\s*(?:[;=,])",
+        masked[:offset],
+        re.MULTILINE,
+    ):
+        if _dart_brace_depth(masked, match.start()) == 0:
+            receivers.add(match.group("name"))
+    return receivers
+
+
+def _dart_dio_candidate_direct_receivers(masked: str) -> set[str]:
+    receivers: set[str] = {"dio", "this.dio"}
+    for match in re.finditer(
+        r"\b(?:final|var|late\s+final)\s+(?P<name>_?[A-Za-z]\w*)\s*=\s*Dio\s*\(",
+        masked,
+    ):
+        receivers.add(match.group("name"))
+    for match in re.finditer(
+        r"^\s*(?:late\s+)?(?:final\s+)?Dio\??\s+(?P<name>_?[A-Za-z]\w*)\s*(?:[;=,])",
+        masked,
+        re.MULTILINE,
+    ):
+        receivers.add(match.group("name"))
+        receivers.add(f"this.{match.group('name')}")
+    return receivers
+
+
+def _dart_receiver_is_proven_dio(
+    receiver: str,
+    masked: str,
+    class_facts: dict[str, _DartClassFacts],
+    class_ranges: list[_DartClassRange],
+    function_ranges: list[_DartFunctionRange],
+    offset: int,
+) -> bool:
+    if receiver == "Dio()":
+        return True
+    enclosing_class = _dart_enclosing_class(class_ranges, offset)
+    enclosing_function = _dart_enclosing_function(function_ranges, offset)
+    if enclosing_function and receiver in _dart_dio_direct_receivers_before(masked, offset, enclosing_function.start):
+        return True
+    if receiver in _dart_top_level_dio_receivers_before(masked, offset):
+        return True
+
+    normalized = receiver.removeprefix("this.")
+    parts = normalized.split(".")
+    if not parts:
+        return False
+    if len(parts) == 1:
+        if enclosing_class is None:
+            return False
+        return class_facts.get(enclosing_class.name, _DartClassFacts({})).fields.get(parts[0]) == "Dio"
+    if enclosing_class is None:
+        return False
+    current_type = class_facts.get(enclosing_class.name, _DartClassFacts({})).fields.get(parts[0])
+    for member in parts[1:]:
+        if current_type is None:
+            return False
+        current_type = class_facts.get(current_type, _DartClassFacts({})).fields.get(member)
+    return current_type == "Dio"
+
+
+def _dart_dio_candidates(masked: str) -> list[_DartCallCandidate]:
+    candidates: list[_DartCallCandidate] = []
+    direct_receivers = _dart_dio_candidate_direct_receivers(masked)
+    call_pattern = re.compile(
+        rf"(?P<receiver>Dio\s*\(\s*\)|(?:this\.)?_?[A-Za-z]\w*(?:\._?[A-Za-z]\w*)*)"
+        rf"\.(?P<method>{_METHODS})\s*\(\s*"
+        r"(?:(?P<quote>['\"])(?P<url>.*?)(?P=quote))?",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in call_pattern.finditer(masked):
+        receiver = re.sub(r"\s+", "", match.group("receiver"))
+        normalized = receiver.removeprefix("this.")
+        if receiver != "Dio()" and ".dio" not in receiver and receiver not in direct_receivers and normalized not in direct_receivers:
+            continue
+        candidates.append(
+            _DartCallCandidate(
+                receiver=receiver,
+                method=match.group("method"),
+                url=match.group("url"),
+                offset=match.start(),
+            )
+        )
+    return candidates
+
+
+def _dio(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], list[DiscoveryIssue], int]:
+    endpoints: list[EndpointFinding] = []
+    issues: list[DiscoveryIssue] = []
+    scanned = 0
+    class_facts = _dart_class_facts(files)
+    for path in files:
+        if path.suffix.lower() != ".dart":
+            continue
+        text = read_source(path)
+        if text is None:
+            continue
+        masked = _mask_consumer_comments(path, text)
+        if "Dio" not in masked and ".dio" not in masked:
             continue
         scanned += 1
-        names = set(re.findall(r"\b(?:final|var|late\s+final)\s+(\w+)\s*=\s*Dio\s*\(", masked))
-        patterns = [r"Dio\s*\(\s*\)"] + [re.escape(name) for name in names]
-        object_pattern = "|".join(patterns)
-        literal = re.compile(
-            rf"(?P<object>{object_pattern})\.(?P<method>{_METHODS})\s*\(\s*"
-            r"(?P<quote>['\"])(?P<url>.*?)(?P=quote)",
-            re.IGNORECASE | re.DOTALL,
-        )
-        any_call = re.compile(rf"(?:{object_pattern})\.(?:{_METHODS})\s*\(", re.IGNORECASE)
-        recognized = set()
-        for match in literal.finditer(masked):
-            recognized.add(match.start())
-            endpoints.append(
-                _finding(repository, path, text, match.start(), match.group("method"), match.group("url"), "dio")
-            )
-        for call in any_call.finditer(masked):
-            if call.start() not in recognized:
+        class_ranges = _dart_class_ranges(masked)
+        function_ranges = _dart_function_ranges(masked)
+        for candidate in _dart_dio_candidates(masked):
+            if not _dart_receiver_is_proven_dio(
+                candidate.receiver,
+                masked,
+                class_facts,
+                class_ranges,
+                function_ranges,
+                candidate.offset,
+            ):
+                issues.append(
+                    DiscoveryIssue(
+                        code="dio_receiver_unresolved",
+                        message=(
+                            "Dio-like HTTP call found, but the receiver could not be proven "
+                            "as a Dio instance from source types or assignments."
+                        ),
+                        detector_id="dio-consumer",
+                        evidence=(_evidence(repository, path, text, candidate.offset, "unresolved Dio receiver"),),
+                    )
+                )
+                continue
+            if candidate.url is None:
                 issues.append(
                     DiscoveryIssue(
                         code="dio_dynamic_url_unresolved",
                         message="Dio call found with a non-literal URL.",
                         detector_id="dio-consumer",
-                        evidence=(_evidence(repository, path, text, call.start(), "dynamic Dio call"),),
+                        evidence=(_evidence(repository, path, text, candidate.offset, "dynamic Dio call"),),
                     )
                 )
+                continue
+            endpoints.append(
+                _finding(
+                    repository,
+                    path,
+                    text,
+                    candidate.offset,
+                    candidate.method,
+                    candidate.url,
+                    "dio",
+                )
+            )
     return endpoints, issues, scanned
 
 
@@ -1304,14 +1560,24 @@ def detect_consumed_endpoints(
                 )
             )
         issues.extend(client_issues)
+        supported_patterns = (f"direct literal {client} HTTP calls",)
+        detector_version = "1.0.0"
+        if client == "dio":
+            detector_version = "1.1.0"
+            supported_patterns = (
+                "Dio() literal HTTP calls",
+                "local variables assigned from Dio(...)",
+                "typed Dio fields",
+                "typed dependency member chains ending in a proven Dio field",
+            )
         coverages.append(
             DetectorCoverage(
                 detector_id=detector_id,
-                detector_version="1.0.0",
+                detector_version=detector_version,
                 category="consumed",
                 status="partial" if client_issues else "supported",
                 files_scanned=scanned,
-                supported_patterns=(f"direct literal {client} HTTP calls",),
+                supported_patterns=supported_patterns,
                 unsupported_patterns=tuple(sorted({issue.code for issue in client_issues})),
             )
         )
