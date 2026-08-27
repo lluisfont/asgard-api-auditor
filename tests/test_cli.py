@@ -114,7 +114,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue(json.loads(stdout.getvalue())["discovery_complete"])
 
-    def test_full_audit_generates_artifacts_but_remains_partial(self) -> None:
+    def test_full_audit_client_only_generates_complete_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = _init_repo(root, with_supported_api=True)
@@ -122,12 +122,26 @@ class CliTests(unittest.TestCase):
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
                 code = main(["audit", str(repo), "--output", str(output)])
-            self.assertEqual(code, 3)
-            self.assertIn("Audit status: partial", stdout.getvalue())
+            self.assertEqual(code, 0)
+            self.assertIn("Audit status: complete", stdout.getvalue())
             self.assertTrue((output / "openapi.yaml").is_file())
             self.assertTrue((output / "api-knowledge.md").is_file())
             self.assertTrue((output / "findings.json").is_file())
             self.assertTrue((output / "audit-report.md").is_file())
+
+    def test_full_audit_required_correlation_remains_partial_without_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _init_repo(root, with_supported_api=True)
+            output = root / "audit-output"
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(["audit", str(repo), "--output", str(output), "--require-correlation"])
+            self.assertEqual(code, 3)
+            self.assertIn("Audit status: partial", stdout.getvalue())
+            payload = json.loads((output / "findings.json").read_text(encoding="utf-8"))
+            ids = {item["unresolved_id"] for item in payload["unresolved"]}
+            self.assertIn("provider-consumer-correlation-required-not-evaluable", ids)
 
     def test_bare_repository_keeps_backward_compatibility(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

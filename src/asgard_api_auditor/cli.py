@@ -57,6 +57,11 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--allow-dirty", action="store_true", help="Allow diagnostic audit of dirty tree")
     audit.add_argument("--exclude-path", action="append", help="Repository-relative path to exclude; may be repeated")
     audit.add_argument(
+        "--require-correlation",
+        action="store_true",
+        help="Fail closed unless provider/consumer correlation can be evaluated for consumed endpoints.",
+    )
+    audit.add_argument(
         "--soap-wsdl",
         action="append",
         metavar="SERVICE=PATH",
@@ -180,6 +185,7 @@ def _audit_command(args: argparse.Namespace) -> int:
             target,
             allow_dirty=args.allow_dirty,
             soap_wsdl=soap_wsdl,
+            require_correlation=args.require_correlation,
         )
     except (InventoryError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

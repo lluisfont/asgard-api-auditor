@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.2 - 2026-08-27
+
+### Fixed
+
+- Audit completion now treats contract enrichment as not applicable for client-only repositories with zero exposed endpoints.
+- Provider contract enrichment and explicit correlation requirements now remain fail-closed only when they are in scope and not evaluable.
+
 ## 0.7.1 - 2026-08-26
 
 ### Fixed

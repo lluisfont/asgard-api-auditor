@@ -43,6 +43,23 @@ def _repo(root: Path) -> Path:
     return repo
 
 
+def _client_only_repo(root: Path) -> Path:
+    repo = root / "client"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "package.json").write_text(
+        json.dumps({"dependencies": {"axios": "^1.0.0"}}), encoding="utf-8"
+    )
+    (repo / "client.ts").write_text(
+        "import axios from 'axios';\naxios.get('/health');\n", encoding="utf-8"
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "client fixture")
+    return repo
+
+
 def _replace_routes(repo: Path, content: str) -> None:
     (repo / "routes.php").write_text(content, encoding="utf-8")
     _git(repo, "add", "routes.php")
@@ -77,7 +94,7 @@ class GenerationTests(unittest.TestCase):
             self.assertIn('/inventory/{id}', openapi)
             self.assertNotIn("consumer.example", openapi)
             self.assertIn("consumer.example", knowledge)
-            self.assertIn("x-asgard-contract-enrichment: partial", openapi)
+            self.assertIn("x-asgard-contract-enrichment: required_not_complete", openapi)
 
     def test_equivalent_templates_with_distinct_methods_share_canonical_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -117,10 +134,29 @@ class GenerationTests(unittest.TestCase):
                 generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
             self.assertFalse(destination.exists())
 
-    def test_findings_keep_contract_enrichment_blocking(self) -> None:
+    def test_client_only_audit_completes_when_contract_and_correlation_are_out_of_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _client_only_repo(root)
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="client"))
+            payload = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            openapi = (destination / "openapi.yaml").read_text(encoding="utf-8")
+
+            self.assertEqual(payload["status"], "complete")
+            self.assertEqual(len([item for item in payload["endpoints"] if item["direction"] == "exposed"]), 0)
+            self.assertEqual(len([item for item in payload["endpoints"] if item["direction"] == "consumed"]), 1)
+            self.assertEqual(payload["unresolved"], [])
+            self.assertIn("contract_enrichment_scope=not_applicable", payload["coverage"]["notes"])
+            self.assertIn("correlation_scope=out_of_scope", payload["coverage"]["notes"])
+            self.assertIn("x-asgard-contract-enrichment: not_applicable", openapi)
+            validate_audit_set(destination)
+
+    def test_provider_incomplete_contract_enrichment_blocks_completion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = _repo(root)
+            _replace_routes(repo, "<?php\n$app->get('/health', function($request, $response, $args) { return $response; });\n")
             destination = root / "audit-output"
             generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
             payload = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
@@ -129,9 +165,75 @@ class GenerationTests(unittest.TestCase):
             self.assertIn("contract-enrichment-v0.7.0-coverage-gate", ids)
             exposed = [item for item in payload["endpoints"] if item["direction"] == "exposed"]
             self.assertEqual(len(exposed), 1)
-            self.assertIn("request", exposed[0])
+            self.assertNotIn("request", exposed[0])
             self.assertNotIn("response", exposed[0])
+            self.assertIn("contract_enrichment_scope=required_not_complete", payload["coverage"]["notes"])
             self.assertIn("contract_enrichment", payload["coverage"])
+
+    def test_provider_complete_contract_enrichment_does_not_add_contract_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->get('/health', function($request, $response, $args) {\n"
+                "    $response->getBody()->write(json_encode(array('ok' => true)));\n"
+                "    return $response->withHeader('Content-Type', 'application/json');\n"
+                "});\n",
+            )
+            destination = root / "audit-output"
+            generate_audit(AuditTarget(repo, output=destination, repository_id="fixture"))
+            payload = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            ids = {item["unresolved_id"] for item in payload["unresolved"]}
+
+            self.assertEqual(payload["status"], "partial")
+            self.assertNotIn("contract-enrichment-v0.7.0-coverage-gate", ids)
+            self.assertIn("contract_enrichment_scope=evaluated_complete", payload["coverage"]["notes"])
+            self.assertIn("correlation_scope=out_of_scope", payload["coverage"]["notes"])
+
+    def test_required_correlation_without_provider_artifacts_blocks_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _client_only_repo(root)
+            destination = root / "audit-output"
+            generate_audit(
+                AuditTarget(repo, output=destination, repository_id="client"),
+                require_correlation=True,
+            )
+            payload = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+            ids = {item["unresolved_id"] for item in payload["unresolved"]}
+
+            self.assertEqual(payload["status"], "partial")
+            self.assertIn("provider-consumer-correlation-required-not-evaluable", ids)
+            self.assertIn("correlation_scope=required_not_evaluable", payload["coverage"]["notes"])
+
+    def test_provider_only_required_correlation_is_not_applicable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _repo(root)
+            (repo / "client.ts").unlink()
+            (repo / "package.json").unlink()
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$app->get('/health', function($request, $response, $args) {\n"
+                "    $response->getBody()->write(json_encode(array('ok' => true)));\n"
+                "    return $response->withHeader('Content-Type', 'application/json');\n"
+                "});\n",
+            )
+            _git(repo, "add", "-A")
+            _git(repo, "commit", "-qm", "provider only")
+            destination = root / "audit-output"
+            generate_audit(
+                AuditTarget(repo, output=destination, repository_id="provider"),
+                require_correlation=True,
+            )
+            payload = json.loads((destination / "findings.json").read_text(encoding="utf-8"))
+
+            ids = {item["unresolved_id"] for item in payload["unresolved"]}
+            self.assertNotIn("provider-consumer-correlation-required-not-evaluable", ids)
+            self.assertIn("correlation_scope=not_applicable", payload["coverage"]["notes"])
 
     def test_slim_php_contract_enrichment_warehouse_patterns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
