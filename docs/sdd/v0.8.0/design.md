@@ -37,7 +37,7 @@ REFERENCE/CANDIDATE COMPARISON    PROVIDER/CONSUMER CORRELATION
                       |
                       v
               COMPATIBILITY GATE
-                pass/fail/unknown by mode
+                pass/fail by explicit mode
 ```
 
 Each layer consumes normalized facts from the previous layer. The catalog, comparison, and gate layers must be detector-agnostic: they do not inspect framework source code directly and do not contain rules for specific repositories, products, or business domains.
@@ -117,6 +117,13 @@ Endpoint classification:
 - `breaking`: candidate removes or changes behavior in a way that can break clients of the reference.
 - `unknown`: evidence is insufficient to prove one of the previous states.
 
+`same` is a compatibility claim, not a byte-for-byte equality claim. Identical unknown observations remain `unknown` when the unknown field is material to compatibility. To support snapshot drift checks without weakening `UNKNOWN > GUESS`, comparison results may carry separate booleans:
+
+- `artifact_equal`: the compared catalog artifacts are byte-identical after canonical serialization and metadata handling defined by the comparison command.
+- `observed_equal`: the endpoint observations that are present in both catalogs are equal.
+
+Neither property implies `same` for compatibility when material request, response, status, header, type, requiredness, auth/security, or behavior facts remain unknown.
+
 Breaking conditions include:
 
 - endpoint removed;
@@ -129,7 +136,7 @@ Breaking conditions include:
 - request type/media type changed incompatibly;
 - response field removed;
 - response type/media type changed incompatibly;
-- authentication/security made stricter, removed when required, or changed incompatibly;
+- authentication/security made stricter or changed incompatibly for backward API compatibility;
 - incompatible required headers;
 - demonstrated semantic behavior made incompatible with the reference contract.
 
@@ -139,7 +146,7 @@ Additive conditions include:
 - optional request field added;
 - optional response field added;
 - optional header/query parameter added;
-- additional response status documented without removing compatible existing responses;
+- additional response status or media type only when compatibility is demonstrated;
 - stronger semantic detail added without contradicting the reference.
 
 `unknown` conditions include:
@@ -148,32 +155,48 @@ Additive conditions include:
 - candidate lacks enough evidence to prove compatibility;
 - both sides are partial in a field that materially affects compatibility;
 - correlation is ambiguous and the gate requires a provider match;
-- schema types are unknown where compatibility depends on type.
+- schema types are unknown where compatibility depends on type;
+- an additional response status such as `401`, `409`, or `500` is observed but its compatibility with existing consumers is not demonstrated.
 
 ### COMPATIBILITY GATE
 
-The gate evaluates comparison results according to execution mode.
+The gate evaluates comparison results according to explicit execution mode.
 
-Recommended modes:
+Reference/candidate modes:
 
-- `report`: emit all classifications; do not fail only because `unknown` exists.
-- `fail_on_breaking`: fail when any required API is `breaking`.
-- `fail_closed`: fail on `breaking`, `missing`, `ambiguous`, or `unknown` for required APIs.
+- `report`: emit all classifications and a report verdict; do not fail only because `breaking` or `unknown` exists.
+- `fail_on_breaking`: fail when a required reference API is `breaking`; report `unknown` without failing.
+- `fail_closed`: fail when a required reference API is `breaking` or `unknown`.
 
-Provider/consumer gates should default to fail-closed for required consumer dependencies. Reference/candidate reports may default to report mode unless explicitly used as a CI gate.
+Provider/consumer modes use the same names but dependency-oriented statuses:
+
+- `report`: emit all dependency classifications without failing solely on `breaking`, `missing`, `ambiguous`, or `unknown`.
+- `fail_on_breaking`: fail on `breaking` or `missing` required dependencies; report `ambiguous` and `unknown` without failing.
+- `fail_closed`: fail on `breaking`, `missing`, `ambiguous`, or `unknown` required dependencies.
+
+Reference/candidate comparison defaults to `report` unless a gate mode is supplied. Provider/consumer compatibility defaults to `fail_closed` for required dependencies.
 
 ## Stable Identity
 
-Endpoint identity must be stable across line movement and formatting changes.
+Endpoint identity must be stable across line movement, formatting changes, and schema evolution.
 
 Recommended identity inputs:
 
-- catalog schema version;
 - direction;
 - method;
 - normalized path shape;
 - optional stable `api_id` only when proven;
 - contract namespace only when explicitly supplied by the caller or artifact metadata.
+
+Catalog schema version is metadata for reproducibility and validation. It must not be an endpoint identity input, because schema evolution must not change endpoint IDs when the API contract did not change.
+
+Identity terms:
+
+- `stable_identity`: structured, serializable contractual identity inputs such as direction, method, normalized path shape, and optional proven namespace.
+- `endpoint_id`: deterministic digest or identifier derived from `stable_identity`.
+- `api_id`: optional higher-level API grouping when source evidence or explicit catalog configuration proves a stable grouping.
+
+`api_id` may be one input to `stable_identity` only when it is independently proven. `endpoint_id` must never be an input to `api_id` or `stable_identity`.
 
 Identity must not include:
 
@@ -182,13 +205,18 @@ Identity must not include:
 - generated order;
 - repository display name;
 - framework name;
-- business name.
+- business name;
+- catalog schema version.
 
 Source evidence remains attached separately so reviewers can trace the identity back to code.
 
 ## Contract Comparison Semantics
 
 Comparison is field-aware and conservative.
+
+### Reference/Candidate Direction
+
+Reference/candidate comparison asks whether the `candidate` preserves the externally relevant contract selected as `reference`. It does not assume repository inheritance, runtime dependency, or product lineage.
 
 Request compatibility:
 
@@ -197,20 +225,23 @@ Request compatibility:
 - Removing a required reference request field is breaking unless the field is no longer required by the external contract and that is proven.
 - Unknown requiredness yields `unknown`, not `same`.
 - Type narrowing is breaking unless proven compatible.
-- Type widening may be additive only when source evidence proves the provider still accepts reference values.
+- Type widening may be additive only when source evidence proves the candidate still accepts reference values.
 
 Response compatibility:
 
 - Removing a response field present in the reference is breaking when consumers may depend on it.
 - Adding an optional response field is additive.
 - Changing a field type is breaking unless compatibility can be proven.
+- Adding a response status is not automatically additive; it is additive only when the status is demonstrably compatible with the reference contract.
+- A newly observable error status may be `breaking` if evidence shows existing valid requests can now receive it incompatibly, otherwise it is `unknown`.
 - Unknown candidate response structure yields `unknown` for response compatibility.
 
 Security compatibility:
 
-- Removing required auth where the reference required it is breaking unless the execution explicitly treats weakening auth as non-breaking for consumers.
 - Adding stricter auth to an unauthenticated or differently authenticated reference endpoint is breaking.
 - Unknown auth on either side yields `unknown` when auth matters to the gate.
+- Removing or weakening auth is not automatically a backward client compatibility break, because existing clients may still call successfully. It must be reported separately as security policy/conformance drift.
+- A security policy gate may classify weakening auth as a failure, but the API compatibility classifier must not silently merge that policy result into `breaking` unless the selected gate explicitly requires it.
 
 Behavior compatibility:
 
@@ -218,6 +249,73 @@ Behavior compatibility:
 - Behavior unknown cannot be used to prove `same`.
 - Functional body fields remain distinct from HTTP status.
 - Consumed JWT context remains distinct from produced JWT context.
+
+Self-comparison:
+
+- Complete material facts compared with the same facts may classify as `same`.
+- Material unknown facts compared with the same unknown facts classify as `unknown` for compatibility and may set `observed_equal=true`.
+- Byte-identical catalogs may set `artifact_equal=true`, but this is not a compatibility verdict.
+
+### Provider/Consumer Direction
+
+Provider/consumer compatibility asks whether each `provider` can satisfy what each `consumer` is proven to require. It must not automatically reuse reference/candidate comparison rules because the direction of obligation differs.
+
+Request rules:
+
+- The provider must accept every request shape the consumer can produce within the demonstrated consumer contract.
+- If the consumer sends `{id}` and the provider accepts `{id, comment?}`, the dependency is `compatible`.
+- If the consumer may send `{id, comment}` and the provider accepts only `{id}` and proves additional fields invalid, the dependency is `breaking`.
+- If provider tolerance for consumer-produced fields is material and unknown, the dependency is `unknown`.
+- If consumer requiredness is unknown and material to provider acceptance, the dependency is `unknown`.
+
+Response rules:
+
+- The provider must produce at least the response data and statuses the consumer demonstrates it needs.
+- If the consumer requires `{id, status}` and the provider produces `{id, status, description}`, the dependency is `compatible` only when additional fields are demonstrated not to break the consumer or are immaterial under the consumer contract.
+- If the consumer requires `{id, status}` and the provider only proves `{id}`, the dependency is `breaking`.
+- If tolerance for provider response additions is material and cannot be demonstrated, the dependency is `unknown`.
+
+Path and query parameter rules:
+
+- Provider path shape must match the consumed path shape deterministically.
+- Provider must accept every path parameter shape the consumer can produce.
+- Provider-required query parameters not produced by the consumer are `breaking`.
+- Consumer-produced query parameters rejected by the provider are `breaking`.
+- Unknown parameter requiredness, type, format, or acceptance is `unknown` when material.
+
+Header rules:
+
+- Provider-required headers not produced by the consumer are `breaking`.
+- Consumer-produced headers rejected by the provider are `breaking`.
+- Additional optional provider headers are compatible only when no consumer obligation is created.
+- Unknown header requiredness or acceptance is `unknown` when material.
+
+Content type rules:
+
+- Provider must accept the content types the consumer can send.
+- Provider response content type must be one the consumer can parse when response parsing is demonstrated.
+- Unknown content-type support is `unknown` when material.
+
+Status code rules:
+
+- Provider must preserve statuses the consumer demonstrates it handles or requires.
+- Additional provider statuses are compatible only when the consumer is proven tolerant or the status is outside the demonstrated successful dependency path.
+- A new reachable error status is `unknown` or `breaking` according to evidence; it is never automatically additive.
+
+Auth/security rules:
+
+- Provider auth requirements must be satisfiable by the consumer's demonstrated produced credentials, headers, or tokens.
+- Stricter provider auth that the consumer cannot satisfy is `breaking`.
+- Unknown auth compatibility is `unknown`.
+- Provider auth weakening is reported as security drift and only fails compatibility when an explicit policy gate requires it.
+
+Type and format rules:
+
+- Provider request types must accept the consumer-produced values.
+- Provider response types must satisfy the consumer-required values.
+- Type narrowing is `breaking` when it excludes demonstrated consumer values.
+- Type widening is compatible only when it still includes all demonstrated required values.
+- Unknown type/format compatibility is `unknown`.
 
 ## Provider/Consumer Compatibility
 
@@ -232,7 +330,7 @@ For each consumed endpoint:
 
 1. Build the normalized method/path requirement.
 2. Locate compatible provider candidates by deterministic correlation.
-3. Compare the consumer requirement against the provider contract.
+3. Compare the consumer requirement against the provider contract using provider/consumer directional rules.
 4. Classify as `compatible`, `breaking`, `missing`, `ambiguous`, or `unknown`.
 5. Attach evidence from both sides.
 
@@ -259,12 +357,15 @@ The comparison must be reproducible from the recorded inputs and hashes.
 
 Required deterministic validations:
 
-- Reference catalog compared with itself yields no `breaking` and no `unknown` compatibility changes.
+- Complete reference catalog compared with itself yields `same` for complete material facts and no `breaking`.
+- Reference catalog with material unknowns compared with itself yields `observed_equal=true` and preserves endpoint-level `unknown` compatibility for those material unknowns.
 - Candidate with one new endpoint classifies that endpoint as `additive`.
 - Candidate with a removed endpoint classifies the reference endpoint as `breaking`.
 - Candidate with an incompatible request change classifies the endpoint as `breaking`.
 - Candidate with an incompatible response change classifies the endpoint as `breaking`.
-- Candidate with incompatible security classifies the endpoint as `breaking`.
+- Candidate with stricter incompatible security classifies the endpoint as `breaking`.
+- Candidate with weaker security is reported as security drift and only fails a security policy gate.
+- Additional response status is `additive` only when compatibility is demonstrated; otherwise it is `unknown` or `breaking` according to evidence.
 - Consumer/provider validation checks all consumed dependencies against providers without hard-coded endpoint lists.
 
 Real validation repositories are allowed only as fixtures. Product code must remain generic.
@@ -274,4 +375,3 @@ Real validation repositories are allowed only as fixtures. Product code must rem
 - Whether `api-catalog.json` should be emitted by `audit` by default or by an explicit `catalog-api` command.
 - Whether comparison should accept `findings.json` as a convenience input and internally build temporary catalogs.
 - Whether consumer compatibility should be a mode of `compare-api` or a separate command.
-- How strict default CI behavior should be for `unknown` in reference/candidate comparison when no gate mode is supplied.

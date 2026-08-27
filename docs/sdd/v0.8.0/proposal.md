@@ -66,7 +66,34 @@ The existing artifacts remain valid:
 - `additive` requires demonstrated backward compatibility.
 - `breaking` requires demonstrated incompatibility against the selected `reference`.
 - `unknown` is required when evidence is insufficient to prove `same`, `additive`, or `breaking`.
-- Gates may fail on `unknown` when the execution mode requires a definitive compatibility verdict.
+- Material `unknown` facts remain `unknown` even when a catalog is compared with itself.
+- Self-comparison may prove `observed_equal=true` or `artifact_equal=true`; that does not prove contract compatibility for material unknown fields.
+- Gates fail on `unknown` in `fail_closed` mode and report `unknown` without failing in `report` and `fail_on_breaking` modes.
+- Backward API compatibility and security policy/conformance drift are separate results unless a gate explicitly combines them.
+- Additional response statuses are never additive by default; compatibility must be demonstrated.
+- Provider/consumer compatibility uses directional obligations and must not blindly reuse reference/candidate comparison rules.
+
+## Identity Principles
+
+- `stable_identity` is the structured contractual identity input.
+- `endpoint_id` is derived from `stable_identity`.
+- `api_id` is an optional independently proven grouping.
+- Catalog schema version is reproducibility metadata and must not affect endpoint identity.
+- No identity input may depend on file, line, generated order, framework name, repository display name, or business/customer naming.
+
+## Gate Semantics
+
+Reference/candidate comparison must support:
+
+- `report`: generate classifications and return a non-failing verdict for reporting, while still surfacing `breaking` and `unknown`.
+- `fail_on_breaking`: fail only when a reference requirement is classified as `breaking`.
+- `fail_closed`: fail when a reference requirement is `breaking` or `unknown`.
+
+Provider/consumer compatibility must support the same modes, with `fail_closed` as the recommended default for required consumer dependencies:
+
+- `report`: generate dependency classifications without failing solely on `breaking`, `missing`, `ambiguous`, or `unknown`.
+- `fail_on_breaking`: fail on `breaking` or `missing` required dependencies.
+- `fail_closed`: fail on `breaking`, `missing`, `ambiguous`, or `unknown` required dependencies.
 
 ## Real Validation Scope
 
@@ -74,9 +101,9 @@ Real repositories may be used only as validation fixtures. Their names and busin
 
 Required real validations:
 
-- Provider/reference compared with itself: no breaking changes and no unknown compatibility changes.
-- Provider/reference compared with a fixture that adds an API: additive.
-- Provider/reference compared with fixtures that remove an endpoint, change a request incompatibly, change a response incompatibly, or change auth incompatibly: breaking.
+- Reference catalog compared with itself: `artifact_equal`/`observed_equal` is true, no artificial changes are introduced, and material unknowns remain `unknown`.
+- Reference catalog compared with a fixture that adds an API: additive.
+- Reference catalog compared with fixtures that remove an endpoint, change a request incompatibly, change a response incompatibly, or change auth incompatibly: breaking.
 - Consumer catalog checked against provider catalog: all consumed dependencies must resolve to compatible provider endpoints or fail closed.
 
 ## Success Criteria

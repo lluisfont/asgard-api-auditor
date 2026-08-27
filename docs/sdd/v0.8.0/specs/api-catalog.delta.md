@@ -47,6 +47,8 @@ The catalog may be built from validated audit artifacts, primarily `findings.jso
 - `source_artifacts`: input artifacts with SHA-256 hashes.
 - `scope`: command options affecting the catalog.
 
+Metadata supports validation and reproducibility. Metadata fields must not be used as contractual endpoint identity inputs unless the field is explicitly part of the externally selected contract namespace. In particular, `schema_version` must not influence endpoint IDs.
+
 ## Endpoint Entry
 
 Each endpoint entry must include:
@@ -71,6 +73,35 @@ Each endpoint entry must include:
 - `semantic_status`: `complete`, `partial`, `unresolved`, `not_applicable`, or `unknown`.
 - `evidence`: source evidence.
 - `unresolved`: endpoint-scoped unresolved items.
+
+## Stable Identity Fields
+
+Identity fields have distinct responsibilities:
+
+- `stable_identity`: structured contractual identity inputs used for matching and ID derivation.
+- `endpoint_id`: deterministic ID derived from `stable_identity`.
+- `api_id`: optional stable grouping when independently proven by source evidence or explicit catalog configuration.
+
+`stable_identity` may include:
+
+- `direction`;
+- `method`;
+- `path_shape`;
+- optional proven namespace;
+- optional proven `api_id`.
+
+`stable_identity` must not include:
+
+- `endpoint_id`;
+- catalog `schema_version`;
+- source file path;
+- source line;
+- generated order;
+- repository display name;
+- framework name;
+- business or customer name.
+
+`api_id` must not be derived from `endpoint_id`. `endpoint_id` must not be used to derive `stable_identity`. This avoids circular identity and keeps endpoint IDs stable across catalog schema evolution.
 
 ## Parameter Facts
 
@@ -132,5 +163,6 @@ The summary must include:
 - Invalid source artifact means no catalog publication.
 - Endpoint without method/path/direction evidence is rejected or represented as unresolved according to schema rules.
 - Unknown fields remain unknown.
+- Unknown request, response, status, auth/security, header, type, requiredness, or behavior facts remain material unknowns for compatibility until later evidence resolves them.
 - The catalog must not erase unresolved findings from the source audit.
 - A complete catalog does not imply complete compatibility; compatibility is evaluated separately.
