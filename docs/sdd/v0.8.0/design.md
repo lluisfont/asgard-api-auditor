@@ -124,6 +124,17 @@ Endpoint classification:
 
 Neither property implies `same` for compatibility when material request, response, status, header, type, requiredness, auth/security, or behavior facts remain unknown.
 
+`artifact_equal` canonicalization:
+
+- parse both catalog JSON documents;
+- remove or separately compare volatile generation metadata selected by the command, such as `generated_at` and catalog execution IDs;
+- sort object keys recursively;
+- sort arrays only where the schema defines order-insensitive collections;
+- preserve endpoint arrays in canonical `endpoint_id` order;
+- compare the canonical byte representation and record the metadata handling used.
+
+This canonicalization is for snapshot equality only. It must not affect endpoint compatibility classification.
+
 Breaking conditions include:
 
 - endpoint removed;
@@ -176,6 +187,24 @@ Provider/consumer modes use the same names but dependency-oriented statuses:
 
 Reference/candidate comparison defaults to `report` unless a gate mode is supplied. Provider/consumer compatibility defaults to `fail_closed` for required dependencies.
 
+### Required API and Dependency Scope
+
+Reference/candidate requirements:
+
+- By default, every endpoint included in the `reference` catalog and inside the selected scope is a required API for compatibility evaluation.
+- `breaking` on any scoped reference endpoint affects `fail_on_breaking` and `fail_closed`.
+- `unknown` on any scoped reference endpoint affects `fail_closed`.
+- When an explicit scope/filter is supplied, only endpoints included by that scope participate as required APIs.
+- Endpoints excluded by scope/filter must be recorded in metadata/scope with the rule that excluded them.
+- Required/optional API status must not be inferred from endpoint name, usage frequency, conditional code, repository identity, framework, business domain, feature naming, or implementation structure.
+
+Provider/consumer required dependencies:
+
+- By default, every consumed endpoint included in the `consumer` catalogs and inside the selected scope is a required dependency.
+- A consumed endpoint can be removed from the dependency gate only by explicit scope/filter.
+- Excluded dependencies must be recorded in metadata/scope with the rule that excluded them.
+- Required/optional dependency status must not be inferred from endpoint name, usage frequency, conditional code, repository identity, framework, business domain, feature naming, or implementation structure.
+
 ## Stable Identity
 
 Endpoint identity must be stable across line movement, formatting changes, and schema evolution.
@@ -185,7 +214,6 @@ Recommended identity inputs:
 - direction;
 - method;
 - normalized path shape;
-- optional stable `api_id` only when proven;
 - contract namespace only when explicitly supplied by the caller or artifact metadata.
 
 Catalog schema version is metadata for reproducibility and validation. It must not be an endpoint identity input, because schema evolution must not change endpoint IDs when the API contract did not change.
@@ -196,7 +224,7 @@ Identity terms:
 - `endpoint_id`: deterministic digest or identifier derived from `stable_identity`.
 - `api_id`: optional higher-level API grouping when source evidence or explicit catalog configuration proves a stable grouping.
 
-`api_id` may be one input to `stable_identity` only when it is independently proven. `endpoint_id` must never be an input to `api_id` or `stable_identity`.
+`api_id` is grouping metadata, not an endpoint identity input. `endpoint_id` must remain stable if the same endpoint is first cataloged with `api_id=null` and later gains a proven `api_id`, unless method, path shape, direction, or explicit namespace changed. `endpoint_id` must never be an input to `api_id` or `stable_identity`.
 
 Identity must not include:
 
@@ -207,6 +235,7 @@ Identity must not include:
 - framework name;
 - business name;
 - catalog schema version.
+- `api_id`.
 
 Source evidence remains attached separately so reviewers can trace the identity back to code.
 
@@ -357,6 +386,13 @@ The comparison must be reproducible from the recorded inputs and hashes.
 
 Required deterministic validations:
 
+- Reference catalog with three scoped endpoints and one `breaking` endpoint fails `fail_on_breaking`.
+- Reference catalog with three scoped endpoints and one `unknown` endpoint passes `fail_on_breaking` while reporting `unknown`.
+- Reference catalog with three scoped endpoints and one `unknown` endpoint fails `fail_closed`.
+- Explicit reference scope excluding a `breaking` endpoint removes that endpoint from gate participation and records the exclusion in metadata/scope.
+- Consumer catalog with three scoped consumed endpoints and one `missing` dependency fails `fail_on_breaking`.
+- Explicit consumer scope excluding a dependency removes it from gate participation and records the exclusion in metadata/scope.
+- Same endpoint without `api_id` and later with a proven `api_id` keeps the same `endpoint_id`.
 - Complete reference catalog compared with itself yields `same` for complete material facts and no `breaking`.
 - Reference catalog with material unknowns compared with itself yields `observed_equal=true` and preserves endpoint-level `unknown` compatibility for those material unknowns.
 - Candidate with one new endpoint classifies that endpoint as `additive`.

@@ -77,9 +77,11 @@ The existing artifacts remain valid:
 
 - `stable_identity` is the structured contractual identity input.
 - `endpoint_id` is derived from `stable_identity`.
-- `api_id` is an optional independently proven grouping.
+- `api_id` is an optional independently proven grouping and must not be required to derive `endpoint_id`.
+- `endpoint_id` should be derived only from intrinsic stable contract identity: `direction`, `method`, `path_shape`, and an explicit stable namespace when one is supplied.
 - Catalog schema version is reproducibility metadata and must not affect endpoint identity.
 - No identity input may depend on file, line, generated order, framework name, repository display name, or business/customer naming.
+- If an endpoint is first cataloged without `api_id` and later gains a proven `api_id`, its `endpoint_id` must remain stable unless the intrinsic method/path contract or explicit namespace changed.
 
 ## Gate Semantics
 
@@ -94,6 +96,24 @@ Provider/consumer compatibility must support the same modes, with `fail_closed` 
 - `report`: generate dependency classifications without failing solely on `breaking`, `missing`, `ambiguous`, or `unknown`.
 - `fail_on_breaking`: fail on `breaking` or `missing` required dependencies.
 - `fail_closed`: fail on `breaking`, `missing`, `ambiguous`, or `unknown` required dependencies.
+
+## Requirement Semantics
+
+Reference/candidate requirements:
+
+- By default, every endpoint included in the `reference` catalog and inside the selected scope is a compatibility requirement.
+- `breaking` on any scoped reference endpoint affects `fail_on_breaking` and `fail_closed`.
+- `unknown` on any scoped reference endpoint affects `fail_closed`.
+- If an explicit scope/filter is supplied, only endpoints included by that scope participate as requirements.
+- Excluded endpoints must be recorded in metadata/scope with the exclusion rule that removed them from the gate.
+- The auditor must not infer required or optional APIs from name, usage frequency, conditional code, repository identity, framework, business domain, feature naming, or implementation structure.
+
+Provider/consumer required dependencies:
+
+- By default, every consumed endpoint included in the `consumer` catalogs and inside the selected scope is a required dependency.
+- A consumed dependency can be excluded only by explicit scope/filter.
+- Excluded dependencies must be recorded in metadata/scope with the exclusion rule that removed them from the gate.
+- The auditor must not infer that a dependency is optional from name, usage frequency, conditional code, repository identity, framework, business domain, feature naming, or implementation structure.
 
 ## Real Validation Scope
 

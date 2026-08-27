@@ -114,6 +114,18 @@ Examples:
 
 Required consumer dependencies default to `fail_closed` in CI.
 
+## Required Dependency Semantics
+
+By default, every consumed endpoint included in the `consumer` catalogs and inside the selected scope is a required dependency.
+
+Rules:
+
+- `breaking` or `missing` on any scoped consumed endpoint affects `fail_on_breaking` and `fail_closed`.
+- `ambiguous` or `unknown` on any scoped consumed endpoint affects `fail_closed`.
+- Explicit scope/filter options may exclude consumed endpoints from the dependency gate.
+- Excluded dependencies must be listed in output metadata/scope with the rule that excluded them.
+- Required/optional dependency status must not be inferred from endpoint name, usage frequency, conditional code, repository identity, framework, business domain, feature naming, or implementation structure.
+
 ## Output Summary
 
 The machine-readable output must include:
@@ -122,6 +134,8 @@ The machine-readable output must include:
 - provider catalogs;
 - input hashes;
 - total consumed dependencies;
+- scoped required dependencies;
+- excluded consumed dependencies;
 - compatible;
 - breaking;
 - missing;

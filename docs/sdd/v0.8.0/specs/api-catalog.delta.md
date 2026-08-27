@@ -87,12 +87,12 @@ Identity fields have distinct responsibilities:
 - `direction`;
 - `method`;
 - `path_shape`;
-- optional proven namespace;
-- optional proven `api_id`.
+- explicit stable namespace when supplied.
 
 `stable_identity` must not include:
 
 - `endpoint_id`;
+- `api_id`;
 - catalog `schema_version`;
 - source file path;
 - source line;
@@ -101,7 +101,7 @@ Identity fields have distinct responsibilities:
 - framework name;
 - business or customer name.
 
-`api_id` must not be derived from `endpoint_id`. `endpoint_id` must not be used to derive `stable_identity`. This avoids circular identity and keeps endpoint IDs stable across catalog schema evolution.
+`api_id` must not be derived from `endpoint_id`. `endpoint_id` must not be used to derive `stable_identity`. Adding a proven `api_id` later must not change the `endpoint_id` for an endpoint whose direction, method, path shape, and explicit namespace are unchanged. This avoids circular identity and keeps endpoint IDs stable across catalog schema evolution and grouping enrichment.
 
 ## Parameter Facts
 

@@ -20,6 +20,8 @@ Task plan only. Do not implement until the SDD proposal and design are approved.
 - Preserve existing `endpoint_id` only when compatible with the v0.8 stable identity rules.
 - Add canonical identity generation independent of file, line, generated order, repository display name, framework name, business name, and catalog schema version.
 - Define `stable_identity`, derive `endpoint_id` from it, and keep `api_id` as an optional independently proven grouping.
+- Ensure `endpoint_id` is derived only from direction, method, path shape, and explicit stable namespace when supplied.
+- Ensure adding a proven `api_id` later does not change `endpoint_id` when the endpoint's intrinsic contract identity is unchanged.
 - Preserve all available request, response, headers, auth/security, behavior, evidence, unresolved, contract status, and semantic status.
 - Record input artifact hashes and source metadata.
 - Emit `api-catalog.json` atomically and validate before publication.
@@ -38,6 +40,9 @@ asgard-api-auditor compare-api reference-api-catalog.json candidate-api-catalog.
 - Support explicit gate mode flags: `report`, `fail_on_breaking`, and `fail_closed`.
 - Define reference/candidate default as `report`.
 - Define provider/consumer required-dependency default as `fail_closed`.
+- Define scoped reference endpoints as required APIs by default.
+- Define scoped consumed endpoints as required dependencies by default.
+- Require explicit scope/filter to exclude any endpoint from gate participation.
 - Ensure all commands accept generic `reference`, `candidate`, `provider`, and `consumer` terminology.
 
 ## 4. Reference/Candidate Comparison Engine
@@ -45,6 +50,8 @@ asgard-api-auditor compare-api reference-api-catalog.json candidate-api-catalog.
 - Match reference and candidate endpoints by stable identity and normalized method/path shape.
 - Classify each endpoint as `same`, `additive`, `breaking`, or `unknown`.
 - Add separate `artifact_equal` and `observed_equal` fields that do not imply compatibility.
+- Define deterministic canonicalization for `artifact_equal`.
+- Record all scope/filter inclusions and exclusions used to decide gate participation.
 - Preserve material unknowns as `unknown`, including self-comparison.
 - Detect breaking endpoint removal, method changes, incompatible path changes, path parameter changes, required request additions, request removals, incompatible request types, response removals, incompatible response types, stricter incompatible auth/security, and incompatible required headers.
 - Report weaker auth/security separately as security policy/conformance drift unless a security policy gate explicitly treats it as failure.
@@ -61,6 +68,8 @@ asgard-api-auditor compare-api reference-api-catalog.json candidate-api-catalog.
 - Include summary counts:
   - reference endpoints;
   - candidate endpoints;
+  - scoped reference requirements;
+  - excluded reference endpoints;
   - same;
   - additive;
   - breaking;
@@ -76,11 +85,14 @@ asgard-api-auditor compare-api reference-api-catalog.json candidate-api-catalog.
 - Reuse deterministic correlation guarantees from v0.6.
 - Accept one or more consumer catalogs and one or more provider catalogs.
 - For each consumed endpoint, find compatible provider candidates without manual mappings.
+- Treat every scoped consumed endpoint as a required dependency unless explicitly excluded by scope/filter.
+- Record excluded dependencies and their exclusion rules in metadata/scope.
 - Classify dependencies as `compatible`, `breaking`, `missing`, `ambiguous`, or `unknown`.
 - Apply directional request rules: provider must accept every demonstrated request shape the consumer can produce.
 - Apply directional response rules: provider must produce at least the demonstrated response data the consumer needs.
 - Apply directional path/query, header, content type, status code, auth/security, type/format, and requiredness rules.
 - Fail closed when a required consumer dependency is missing, ambiguous, breaking, or unknown in `fail_closed` mode.
+- Include summary counts for total consumed dependencies, scoped required dependencies, excluded consumed dependencies, compatible, breaking, missing, ambiguous, unknown, and security drift.
 - Emit machine-readable and Markdown reports.
 - Preserve candidate provider matches without overstating them as confirmed runtime dependencies.
 
@@ -105,6 +117,7 @@ asgard-api-auditor compare-api reference-api-catalog.json candidate-api-catalog.
 - Catalog preserves source evidence and unresolved items.
 - Stable endpoint identity is independent of file, line, output order, and catalog schema version.
 - `api_id`, `endpoint_id`, and `stable_identity` do not depend circularly on each other.
+- Same endpoint without `api_id` and later with proven `api_id` keeps the same `endpoint_id`.
 - Complete self-comparison produces `same` for complete material facts and no `breaking`.
 - Self-comparison with material unknown response/auth facts preserves `unknown` while setting `observed_equal=true`.
 - Byte-identical catalogs can set `artifact_equal=true` without converting material unknowns to `same`.
@@ -128,6 +141,12 @@ asgard-api-auditor compare-api reference-api-catalog.json candidate-api-catalog.
 - Reference/candidate gate `fail_closed` fails on `breaking` or `unknown`.
 - Provider/consumer gate `fail_on_breaking` fails on `breaking` or `missing` required dependencies.
 - Provider/consumer gate `fail_closed` fails on `breaking`, `missing`, `ambiguous`, or `unknown` required dependencies.
+- Reference with three scoped endpoints and one `breaking` endpoint fails `fail_on_breaking`.
+- Reference with three scoped endpoints and one `unknown` endpoint passes `fail_on_breaking` while reporting `unknown`.
+- Reference with three scoped endpoints and one `unknown` endpoint fails `fail_closed`.
+- Explicit reference scope excluding a `breaking` endpoint removes that endpoint from gate participation and records the exclusion in metadata/scope.
+- Consumer catalog with three scoped consumed endpoints and one `missing` dependency fails `fail_on_breaking`.
+- Explicit consumer scope excluding a dependency removes it from gate participation and records the exclusion in metadata/scope.
 
 ## 9. Required Provider/Consumer Directional Tests
 

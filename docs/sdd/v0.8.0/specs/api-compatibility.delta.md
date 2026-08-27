@@ -64,6 +64,17 @@ Endpoint observation fields:
 
 `artifact_equal` and `observed_equal` are not compatibility classifications. They must not convert material unknown fields into `same`.
 
+`artifact_equal` canonicalization:
+
+- parse both catalog JSON inputs;
+- apply command-defined volatile metadata handling, recorded in the output;
+- sort object keys recursively;
+- sort order-insensitive arrays only when allowed by schema semantics;
+- preserve endpoint arrays in canonical `endpoint_id` order;
+- compare the canonical byte representation.
+
+This canonicalization is a snapshot equality check only. It must not influence endpoint compatibility classification.
+
 Compatibility is field-level first, then endpoint-level:
 
 - any field-level `breaking` makes the endpoint `breaking`;
@@ -146,12 +157,26 @@ Reference/candidate comparison supports:
 
 Security drift does not fail these gates unless the gate explicitly enables security policy enforcement.
 
+## Required API Semantics
+
+By default, every endpoint included in the `reference` catalog and inside the selected scope is a required API for compatibility evaluation.
+
+Rules:
+
+- `breaking` on any scoped reference endpoint affects `fail_on_breaking` and `fail_closed`.
+- `unknown` on any scoped reference endpoint affects `fail_closed`.
+- Explicit scope/filter options may exclude reference endpoints from the gate.
+- Excluded endpoints must be listed in output metadata/scope with the rule that excluded them.
+- Required/optional API status must not be inferred from endpoint name, usage frequency, conditional code, repository identity, framework, business domain, feature naming, or implementation structure.
+
 ## Summary Counts
 
 The summary must include:
 
 - reference endpoints;
 - candidate endpoints;
+- scoped reference requirements;
+- excluded reference endpoints;
 - same;
 - additive;
 - breaking;
