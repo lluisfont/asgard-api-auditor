@@ -566,6 +566,49 @@ class EndpointDiscoveryTests(unittest.TestCase):
             self.assertIn(("consumed", "GET", "/x"), _endpoint_set(result))
             self.assertTrue(result.discovery_complete)
 
+    def test_dio_local_receiver_resolves_inside_same_method(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "class Remote {\n"
+                    "  void load() {\n"
+                    "    final client = Dio();\n"
+                    "    client.get('/x');\n"
+                    "  }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertIn(("consumed", "GET", "/x"), _endpoint_set(result))
+            self.assertTrue(result.discovery_complete)
+
+    def test_dio_local_receiver_does_not_escape_previous_method_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "class Remote {\n"
+                    "  dynamic client;\n"
+                    "  void prepare() {\n"
+                    "    final client = Dio();\n"
+                    "  }\n"
+                    "  void load() {\n"
+                    "    client.get('/x');\n"
+                    "  }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            dio = next(item for item in result.detectors if item.detector_id == "dio-consumer")
+            self.assertNotIn(("consumed", "GET", "/x"), _endpoint_set(result))
+            self.assertFalse(result.discovery_complete)
+            self.assertEqual(dio.status, "partial")
+            self.assertIn("dio_receiver_unresolved", {issue.code for issue in result.unresolved})
+            self.assertIn("dio_receiver_unresolved", set(dio.unsupported_patterns))
+
     def test_dio_inline_receiver_literal_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp), {

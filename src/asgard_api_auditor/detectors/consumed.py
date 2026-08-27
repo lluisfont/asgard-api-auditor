@@ -518,6 +518,12 @@ class _DartClassRange:
 
 
 @dataclass(frozen=True)
+class _DartFunctionRange:
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
 class _DartCallCandidate:
     receiver: str
     method: str
@@ -545,6 +551,29 @@ def _dart_class_ranges(text: str) -> list[_DartClassRange]:
         if close_brace is None:
             close_brace = len(text)
         ranges.append(_DartClassRange(class_match.group("name"), open_brace + 1, close_brace))
+    return ranges
+
+
+def _dart_function_ranges(text: str) -> list[_DartFunctionRange]:
+    ranges: list[_DartFunctionRange] = []
+    declaration = re.compile(
+        r"(?:^|[;\}\n])\s*"
+        r"(?:[A-Za-z_<>,\?\[\]\s]+\s+)?"
+        r"(?P<name>_?[A-Za-z]\w*)\s*"
+        r"\([^;{}]*\)\s*(?:async\s*)?\{",
+        re.MULTILINE,
+    )
+    control_keywords = {"if", "for", "while", "switch", "catch", "do"}
+    for match in declaration.finditer(text):
+        if match.group("name") in control_keywords:
+            continue
+        open_brace = text.find("{", match.start())
+        if open_brace < 0:
+            continue
+        close_brace = _matching_brace(text, open_brace)
+        if close_brace is None:
+            close_brace = len(text)
+        ranges.append(_DartFunctionRange(open_brace + 1, close_brace))
     return ranges
 
 
@@ -586,6 +615,13 @@ def _dart_class_facts(files: list[Path]) -> dict[str, _DartClassFacts]:
 
 
 def _dart_enclosing_class(ranges: list[_DartClassRange], offset: int) -> _DartClassRange | None:
+    enclosing = [item for item in ranges if item.start <= offset <= item.end]
+    if not enclosing:
+        return None
+    return min(enclosing, key=lambda item: item.end - item.start)
+
+
+def _dart_enclosing_function(ranges: list[_DartFunctionRange], offset: int) -> _DartFunctionRange | None:
     enclosing = [item for item in ranges if item.start <= offset <= item.end]
     if not enclosing:
         return None
@@ -650,13 +686,14 @@ def _dart_receiver_is_proven_dio(
     masked: str,
     class_facts: dict[str, _DartClassFacts],
     class_ranges: list[_DartClassRange],
+    function_ranges: list[_DartFunctionRange],
     offset: int,
 ) -> bool:
     if receiver == "Dio()":
         return True
     enclosing_class = _dart_enclosing_class(class_ranges, offset)
-    scope_start = enclosing_class.start if enclosing_class else 0
-    if receiver in _dart_dio_direct_receivers_before(masked, offset, scope_start):
+    enclosing_function = _dart_enclosing_function(function_ranges, offset)
+    if enclosing_function and receiver in _dart_dio_direct_receivers_before(masked, offset, enclosing_function.start):
         return True
     if receiver in _dart_top_level_dio_receivers_before(masked, offset):
         return True
@@ -720,8 +757,16 @@ def _dio(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], li
             continue
         scanned += 1
         class_ranges = _dart_class_ranges(masked)
+        function_ranges = _dart_function_ranges(masked)
         for candidate in _dart_dio_candidates(masked):
-            if not _dart_receiver_is_proven_dio(candidate.receiver, masked, class_facts, class_ranges, candidate.offset):
+            if not _dart_receiver_is_proven_dio(
+                candidate.receiver,
+                masked,
+                class_facts,
+                class_ranges,
+                function_ranges,
+                candidate.offset,
+            ):
                 issues.append(
                     DiscoveryIssue(
                         code="dio_receiver_unresolved",
