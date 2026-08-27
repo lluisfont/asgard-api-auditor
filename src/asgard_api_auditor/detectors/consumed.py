@@ -511,6 +511,13 @@ class _DartClassFacts:
 
 
 @dataclass(frozen=True)
+class _DartClassRange:
+    name: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
 class _DartCallCandidate:
     receiver: str
     method: str
@@ -528,6 +535,29 @@ def _dart_class_body(text: str, class_match: re.Match[str]) -> str:
     return text[open_brace + 1 : close_brace]
 
 
+def _dart_class_ranges(text: str) -> list[_DartClassRange]:
+    ranges: list[_DartClassRange] = []
+    for class_match in re.finditer(r"\bclass\s+(?P<name>[A-Z][A-Za-z0-9_]*)\b", text):
+        open_brace = text.find("{", class_match.end())
+        if open_brace < 0:
+            continue
+        close_brace = _matching_brace(text, open_brace)
+        if close_brace is None:
+            close_brace = len(text)
+        ranges.append(_DartClassRange(class_match.group("name"), open_brace + 1, close_brace))
+    return ranges
+
+
+def _dart_brace_depth(text: str, offset: int) -> int:
+    depth = 0
+    for char in text[:offset]:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+    return depth
+
+
 def _dart_class_facts(files: list[Path]) -> dict[str, _DartClassFacts]:
     facts: dict[str, _DartClassFacts] = {}
     field_pattern = re.compile(
@@ -542,19 +572,64 @@ def _dart_class_facts(files: list[Path]) -> dict[str, _DartClassFacts]:
         if text is None:
             continue
         masked = _mask_consumer_comments(path, text)
-        for class_match in re.finditer(r"\bclass\s+(?P<name>[A-Z][A-Za-z0-9_]*)\b", masked):
-            body = _dart_class_body(masked, class_match)
+        for class_range in _dart_class_ranges(masked):
+            body = masked[class_range.start : class_range.end]
             if not body:
                 continue
-            fields = dict(facts.get(class_match.group("name"), _DartClassFacts({})).fields)
+            fields = dict(facts.get(class_range.name, _DartClassFacts({})).fields)
             for field in field_pattern.finditer(body):
+                if _dart_brace_depth(body, field.start()) != 0:
+                    continue
                 fields[field.group("name")] = field.group("type")
-            facts[class_match.group("name")] = _DartClassFacts(fields)
+            facts[class_range.name] = _DartClassFacts(fields)
     return facts
 
 
-def _dart_proven_dio_receivers(masked: str, class_facts: dict[str, _DartClassFacts]) -> set[str]:
-    receivers = {"Dio()"}
+def _dart_enclosing_class(ranges: list[_DartClassRange], offset: int) -> _DartClassRange | None:
+    enclosing = [item for item in ranges if item.start <= offset <= item.end]
+    if not enclosing:
+        return None
+    return min(enclosing, key=lambda item: item.end - item.start)
+
+
+def _dart_dio_direct_receivers_before(masked: str, offset: int, scope_start: int) -> set[str]:
+    receivers: set[str] = set()
+    prefix = masked[scope_start:offset]
+    for match in re.finditer(
+        r"\b(?:final|var|late\s+final)\s+(?P<name>_?[A-Za-z]\w*)\s*=\s*Dio\s*\(",
+        prefix,
+    ):
+        receivers.add(match.group("name"))
+    for match in re.finditer(
+        r"^\s*(?:late\s+)?(?:final\s+)?Dio\??\s+(?P<name>_?[A-Za-z]\w*)\s*(?:[;=,])",
+        prefix,
+        re.MULTILINE,
+    ):
+        receivers.add(match.group("name"))
+        receivers.add(f"this.{match.group('name')}")
+    return receivers
+
+
+def _dart_top_level_dio_receivers_before(masked: str, offset: int) -> set[str]:
+    receivers: set[str] = set()
+    for match in re.finditer(
+        r"\b(?:final|var|late\s+final)\s+(?P<name>_?[A-Za-z]\w*)\s*=\s*Dio\s*\(",
+        masked[:offset],
+    ):
+        if _dart_brace_depth(masked, match.start()) == 0:
+            receivers.add(match.group("name"))
+    for match in re.finditer(
+        r"^\s*(?:late\s+)?(?:final\s+)?Dio\??\s+(?P<name>_?[A-Za-z]\w*)\s*(?:[;=,])",
+        masked[:offset],
+        re.MULTILINE,
+    ):
+        if _dart_brace_depth(masked, match.start()) == 0:
+            receivers.add(match.group("name"))
+    return receivers
+
+
+def _dart_dio_candidate_direct_receivers(masked: str) -> set[str]:
+    receivers: set[str] = {"dio", "this.dio"}
     for match in re.finditer(
         r"\b(?:final|var|late\s+final)\s+(?P<name>_?[A-Za-z]\w*)\s*=\s*Dio\s*\(",
         masked,
@@ -567,26 +642,46 @@ def _dart_proven_dio_receivers(masked: str, class_facts: dict[str, _DartClassFac
     ):
         receivers.add(match.group("name"))
         receivers.add(f"this.{match.group('name')}")
-
-    typed_fields: dict[str, str] = {}
-    for match in re.finditer(
-        r"^\s*(?:late\s+)?(?:final\s+)?(?P<type>[A-Z][A-Za-z0-9_]*)\??\s+"
-        r"(?P<name>_?[A-Za-z]\w*)\s*(?:[;=,])",
-        masked,
-        re.MULTILINE,
-    ):
-        typed_fields[match.group("name")] = match.group("type")
-    for field_name, type_name in typed_fields.items():
-        type_facts = class_facts.get(type_name)
-        if type_facts is None or type_facts.fields.get("dio") != "Dio":
-            continue
-        receivers.add(f"{field_name}.dio")
-        receivers.add(f"this.{field_name}.dio")
     return receivers
+
+
+def _dart_receiver_is_proven_dio(
+    receiver: str,
+    masked: str,
+    class_facts: dict[str, _DartClassFacts],
+    class_ranges: list[_DartClassRange],
+    offset: int,
+) -> bool:
+    if receiver == "Dio()":
+        return True
+    enclosing_class = _dart_enclosing_class(class_ranges, offset)
+    scope_start = enclosing_class.start if enclosing_class else 0
+    if receiver in _dart_dio_direct_receivers_before(masked, offset, scope_start):
+        return True
+    if receiver in _dart_top_level_dio_receivers_before(masked, offset):
+        return True
+
+    normalized = receiver.removeprefix("this.")
+    parts = normalized.split(".")
+    if not parts:
+        return False
+    if len(parts) == 1:
+        if enclosing_class is None:
+            return False
+        return class_facts.get(enclosing_class.name, _DartClassFacts({})).fields.get(parts[0]) == "Dio"
+    if enclosing_class is None:
+        return False
+    current_type = class_facts.get(enclosing_class.name, _DartClassFacts({})).fields.get(parts[0])
+    for member in parts[1:]:
+        if current_type is None:
+            return False
+        current_type = class_facts.get(current_type, _DartClassFacts({})).fields.get(member)
+    return current_type == "Dio"
 
 
 def _dart_dio_candidates(masked: str) -> list[_DartCallCandidate]:
     candidates: list[_DartCallCandidate] = []
+    direct_receivers = _dart_dio_candidate_direct_receivers(masked)
     call_pattern = re.compile(
         rf"(?P<receiver>Dio\s*\(\s*\)|(?:this\.)?_?[A-Za-z]\w*(?:\._?[A-Za-z]\w*)*)"
         rf"\.(?P<method>{_METHODS})\s*\(\s*"
@@ -595,7 +690,8 @@ def _dart_dio_candidates(masked: str) -> list[_DartCallCandidate]:
     )
     for match in call_pattern.finditer(masked):
         receiver = re.sub(r"\s+", "", match.group("receiver"))
-        if receiver != "Dio()" and ".dio" not in receiver and "dio" not in {receiver, receiver.removeprefix("this.")}:
+        normalized = receiver.removeprefix("this.")
+        if receiver != "Dio()" and ".dio" not in receiver and receiver not in direct_receivers and normalized not in direct_receivers:
             continue
         candidates.append(
             _DartCallCandidate(
@@ -623,9 +719,9 @@ def _dio(repository: Path, files: list[Path]) -> tuple[list[EndpointFinding], li
         if "Dio" not in masked and ".dio" not in masked:
             continue
         scanned += 1
-        receivers = _dart_proven_dio_receivers(masked, class_facts)
+        class_ranges = _dart_class_ranges(masked)
         for candidate in _dart_dio_candidates(masked):
-            if candidate.receiver not in receivers:
+            if not _dart_receiver_is_proven_dio(candidate.receiver, masked, class_facts, class_ranges, candidate.offset):
                 issues.append(
                     DiscoveryIssue(
                         code="dio_receiver_unresolved",

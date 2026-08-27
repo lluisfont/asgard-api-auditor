@@ -552,6 +552,20 @@ class EndpointDiscoveryTests(unittest.TestCase):
             self.assertIn(("consumed", "GET", "/inventory/42"), _endpoint_set(result))
             self.assertTrue(result.discovery_complete)
 
+    def test_dio_assigned_receiver_keeps_original_variable_name_support(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "final client = Dio();\n"
+                    "void load() { client.get('/x'); }\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            self.assertIn(("consumed", "GET", "/x"), _endpoint_set(result))
+            self.assertTrue(result.discovery_complete)
+
     def test_dio_inline_receiver_literal_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp), {
@@ -671,6 +685,33 @@ class EndpointDiscoveryTests(unittest.TestCase):
             result = discover_endpoints(AuditTarget(repo))
             dio = next(item for item in result.detectors if item.detector_id == "dio-consumer")
             self.assertIn(("consumed", "GET", "/ok"), _endpoint_set(result))
+            self.assertFalse(result.discovery_complete)
+            self.assertEqual(dio.status, "partial")
+            self.assertIn("dio_receiver_unresolved", {issue.code for issue in result.unresolved})
+
+    def test_dio_member_chain_uses_enclosing_class_field_type_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp), {
+                "pubspec.yaml": "name: app\ndependencies:\n  dio: ^5.0.0\n",
+                "lib/api.dart": (
+                    "import 'package:dio/dio.dart';\n"
+                    "class Api { late Dio dio; }\n"
+                    "class OtherRemote {\n"
+                    "  final Object _api;\n"
+                    "  OtherRemote(this._api);\n"
+                    "  void load() { _api.dio.get('/unknown'); }\n"
+                    "}\n"
+                    "class Remote {\n"
+                    "  final Api _api;\n"
+                    "  Remote(this._api);\n"
+                    "  void load() { _api.dio.get('/known'); }\n"
+                    "}\n"
+                ),
+            })
+            result = discover_endpoints(AuditTarget(repo))
+            dio = next(item for item in result.detectors if item.detector_id == "dio-consumer")
+            self.assertIn(("consumed", "GET", "/known"), _endpoint_set(result))
+            self.assertNotIn(("consumed", "GET", "/unknown"), _endpoint_set(result))
             self.assertFalse(result.discovery_complete)
             self.assertEqual(dio.status, "partial")
             self.assertIn("dio_receiver_unresolved", {issue.code for issue in result.unresolved})
