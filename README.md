@@ -1,20 +1,172 @@
 # ASGARD API Auditor
 
-Auditor técnico para reconstruir y mantener el conocimiento de integración de ASGARD a partir del código real de sus repositorios.
+Auditor determinista de APIs para repositorios de software existentes.
 
-## Objetivo
+Analiza el código real de un repositorio Git, identifica APIs HTTP expuestas y consumidas, reconstruye contratos AS-IS cuando existe evidencia suficiente, registra incertidumbre de forma explícita y genera artefactos trazables para análisis técnico y compatibilidad entre repositorios.
 
-Analizar un repositorio ASGARD, identificar las APIs que expone y consume, reconstruir contratos AS-IS, detectar dependencias y producir conocimiento trazable para el RAG central de APIs.
+La pregunta operativa central es:
 
-La pregunta operativa es:
+> ¿Qué APIs contiene o consume este repositorio y qué puede romperse si cambian?
 
-> ¿Qué puede romperse si esta API cambia?
+ASGARD es el entorno real en el que se ha desarrollado y validado el auditor, pero la v0.8 no contiene lógica específica por repositorio. El auditor puede ejecutarse contra cualquier repositorio Git. La profundidad del resultado depende de los lenguajes, frameworks y patrones que tengan detector soportado.
+
+**Principio:** `UNKNOWN > GUESS`. Una superficie detectada pero no soportada o un hecho que no puede demostrarse no se inventa ni se omite para obtener artificialmente un resultado `complete`.
 
 ## Estado
 
-**v0.8.0 — catálogos API canónicos y compatibilidad cross-repository.**
+**v0.8.0 — Canonical API Contracts & Cross-Repository Compatibility.**
 
-La v0.3 detecta tecnologías y superficies. La v0.4.x localiza endpoints HTTP expuestos/consumidos y operaciones SOAP con cobertura fail-closed. La v0.5 convierte ese discovery en artefactos auditables y reutilizables. La v0.6 añade una primera capa de relación entre consumidores y proveedores a partir de artifacts versionados. La v0.7 añade una capa semántica determinística entre el enrichment de contratos y la generación de OpenAPI/findings. La v0.8 genera catálogos API canónicos y compara contratos entre reference/candidate o provider/consumer sin lógica específica por repositorio.
+La v0.8 incorpora:
+
+- inventario técnico del repositorio;
+- discovery de APIs HTTP expuestas y consumidas;
+- tratamiento separado de SOAP;
+- reconstrucción conservadora de request, response, seguridad y comportamiento donde existe soporte determinista;
+- artefactos auditables y trazables;
+- catálogo API canónico `api-catalog.json`;
+- correlación provider/consumer;
+- comparación reference/candidate;
+- gates de compatibilidad `report`, `fail_on_breaking` y `fail_closed`.
+
+## Requisitos
+
+- Python 3.11+
+- Git
+- Node.js 20.19+ o 22.12+ únicamente para la validación OpenAPI con Redocly CLI 2.x usada por el proyecto
+
+## Instalación
+
+Clonar el auditor y crear un entorno Python aislado:
+
+```bash
+git clone https://github.com/lluisfont/asgard-api-auditor.git
+cd asgard-api-auditor
+
+python -m venv .venv
+```
+
+Activar el entorno virtual.
+
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Linux/macOS:
+
+```bash
+source .venv/bin/activate
+```
+
+Instalar el paquete:
+
+```bash
+python -m pip install -e .
+```
+
+Comprobar la instalación:
+
+```bash
+asgard-api-auditor --version
+```
+
+El paquete registra el comando CLI `asgard-api-auditor`.
+
+## Quick Start
+
+### 1. Auditar un repositorio
+
+El repositorio objetivo debe ser un repositorio Git local con un `HEAD` identificable.
+
+```bash
+asgard-api-auditor audit /ruta/al/repositorio \
+  --repository-id my-repository \
+  --output audit/my-repository
+```
+
+El auditor genera y valida atómicamente:
+
+- `openapi.yaml` — OpenAPI AS-IS de endpoints HTTP expuestos demostrados;
+- `api-knowledge.md` — conocimiento técnico legible;
+- `findings.json` — findings canónicos y evidencia de la auditoría;
+- `audit-report.md` — informe humano de cobertura, resultados y blockers.
+
+Puede excluir rutas del repositorio que no formen parte del producto auditado:
+
+```bash
+asgard-api-auditor audit /ruta/al/repositorio \
+  --repository-id my-repository \
+  --exclude-path audit \
+  --exclude-path work_sample \
+  --output audit/my-repository
+```
+
+### 2. Generar el catálogo API canónico
+
+```bash
+asgard-api-auditor catalog-api \
+  --findings audit/my-repository/findings.json \
+  --output audit/my-repository/api-catalog.json
+```
+
+`api-catalog.json` es la representación estructurada y normalizada de las APIs expuestas y consumidas del repositorio. Conserva dirección, identidad estable, contrato, seguridad, comportamiento demostrado, evidencia, estados de cobertura y unresolved facts.
+
+### 3. Revisar el resultado
+
+No interprete únicamente el número de endpoints. Revise siempre el estado de auditoría, la cobertura de detectores y los elementos `unresolved`.
+
+## Cómo interpretar los estados
+
+### `complete`
+
+El auditor ha podido demostrar cobertura suficiente para las superficies de integración detectadas dentro del alcance auditado y no quedan gaps de cobertura que invaliden el resultado.
+
+`complete` no significa que el auditor haya inventado detalles ausentes. Un contrato puede contener hechos desconocidos siempre que esos unknown sean hechos explícitos y no representen una superficie de código que quedó sin inspeccionar.
+
+### `partial`
+
+La auditoría produjo conocimiento válido, pero existe al menos una limitación relevante de cobertura o reconstrucción.
+
+Ejemplos:
+
+- tecnología o patrón detectado sin detector suficiente;
+- integración SOAP cuyo contrato WSDL no puede validarse completamente;
+- resolución dinámica o ambigua;
+- detector parcial;
+- contrato o semántica material que no puede reconstruirse de forma determinista.
+
+Un resultado `partial` es utilizable como evidencia, pero no debe presentarse como una reconstrucción completa del repositorio.
+
+### `failed`
+
+La auditoría no puede producir un conjunto publicable de artefactos bajo las garantías del auditor.
+
+Los errores de CLI/validación utilizan salida distinta del resultado de cobertura y el auditor falla cerrado ante contratos inválidos.
+
+## Cobertura y stacks soportados
+
+El auditor es genérico respecto al repositorio, pero su profundidad depende de los detectores disponibles.
+
+Resumen actual:
+
+| Stack / patrón | APIs expuestas | APIs consumidas | Enrichment profundo |
+| --- | --- | --- | --- |
+| Slim PHP | Sí | — | Sí: contratos, seguridad y semántica en patrones soportados |
+| Laravel routes | Sí | — | Limitado/conservador |
+| Angular `HttpClient` | — | Sí | Discovery y facts demostrables |
+| Axios | — | Sí | Discovery y facts demostrables |
+| Fetch | — | Sí | Discovery y facts demostrables |
+| Guzzle | — | Sí | Discovery y facts demostrables |
+| Laravel HTTP facade | — | Sí | Discovery y facts demostrables |
+| PHP cURL | — | Sí | Discovery determinista; soporte de wrappers locales acotado |
+| Dio | — | Sí | Discovery fail-closed de receptores demostrables |
+| Dart `http` | — | Sí | Discovery en patrones soportados |
+| PHP `SoapClient` / SOAP | Superficie separada | Superficie separada | Contrato WSDL cuando existe snapshot local versionado |
+
+La matriz detallada y sus límites están en [`docs/supported-stacks.md`](docs/supported-stacks.md).
+
+**Importante:** que un framework aparezca en la tabla no significa que cualquier construcción dinámica de ese framework esté soportada. Los patrones no resolubles permanecen `unresolved` y pueden impedir `complete`.
 
 ## Inventario técnico
 
@@ -22,11 +174,15 @@ La v0.3 detecta tecnologías y superficies. La v0.4.x localiza endpoints HTTP ex
 asgard-api-auditor inventory /ruta/al/repositorio
 ```
 
-Excluir fixtures o artefactos locales:
+Guardar el inventario:
 
 ```bash
-asgard-api-auditor inventory /ruta/al/repositorio --exclude-path audit --exclude-path work_sample
+asgard-api-auditor inventory /ruta/al/repositorio --output inventory.json
 ```
+
+El inventario identifica tecnologías y superficies de integración antes del discovery.
+
+Más detalle: [`docs/technical-inventory.md`](docs/technical-inventory.md).
 
 ## Discovery de endpoints
 
@@ -40,97 +196,48 @@ Guardar resultado:
 asgard-api-auditor discover /ruta/al/repositorio --output endpoint-discovery.json
 ```
 
-Actualmente incluye detectores para Laravel, Slim, Angular `HttpClient`, Axios, Fetch, Guzzle, Laravel HTTP facade, PHP cURL, Dio y Dart `http`.
-
-Slim solo se reconoce en receptores verificables de aplicación/router. PHP cURL soporta `curl_setopt`, `curl_setopt_array([...])`, `curl_setopt_array(array(...))` y wrappers locales `$this->method(...)` cuando la propagación de argumentos es inequívoca.
-
-Las integraciones SOAP se reportan en `integrations`, no como endpoints REST. La detección separa `soap_operations_complete` de `soap_contracts_complete`: puede demostrar operaciones PHP `SoapClient` aunque el contrato WSDL no esté versionado localmente.
-
-Cuando la expresión usada por `SoapClient` no puede resolverse desde código versionado, se puede aportar explícitamente un snapshot WSDL local y versionado:
-
-```bash
-asgard-api-auditor discover /ruta/al/repositorio \
-  --soap-wsdl servicioovp=contracts/soap/ovp.wsdl
-```
-
-`--soap-wsdl` es repetible. La clave puede ser la expresión o valor del servicio detectado. El path debe permanecer dentro del repositorio y estar versionado por Git. El auditor no descarga WSDLs de red durante el discovery.
-
-Si el snapshot es válido, las operaciones SOAP usadas por el código se contrastan contra el WSDL. Una operación consumida que no exista en el contrato genera `soap_operation_not_in_wsdl` y mantiene `discovery_complete=false`.
-
-Si aparece un framework, cliente o patrón no soportado, `discovery_complete=false` y el problema queda explícitamente registrado en `unresolved`.
+Cuando aparece un framework, cliente o patrón no soportado, `discovery_complete=false` y el gap queda registrado en `unresolved`.
 
 Más detalle: [`docs/endpoint-discovery.md`](docs/endpoint-discovery.md).
 
-## Generación de auditoría v0.7
+## SOAP
+
+SOAP se mantiene separado de REST/OpenAPI.
+
+Cuando el WSDL no puede resolverse de forma reproducible desde el repositorio, puede aportarse explícitamente un snapshot local y versionado:
 
 ```bash
 asgard-api-auditor audit /ruta/al/repositorio \
-  --repository-id asgard-warehouse \
-  --exclude-path audit \
-  --exclude-path work_sample \
-  --output api-audit-output
+  --soap-wsdl servicio=contracts/soap/service.wsdl \
+  --output audit/my-repository
 ```
 
-El comando genera y valida atómicamente:
+El auditor no descarga WSDLs de red durante discovery/audit.
 
-- `openapi.yaml`
-- `api-knowledge.md`
-- `findings.json`
-- `audit-report.md`
-
-Los mismos snapshots SOAP de `discover` pueden pasarse a `audit` con `--soap-wsdl`.
-
-### Semántica conservadora
-
-- OpenAPI contiene únicamente endpoints HTTP **expuestos** y demostrados por código.
-- Las llamadas HTTP consumidas permanecen en `findings.json` y `api-knowledge.md`; no se convierten en paths del proveedor.
-- SOAP permanece como superficie de integración separada y nunca se convierte artificialmente en REST.
-- Request bodies, responses, autenticación y autorización se añaden solo cuando pueden demostrarse desde código Slim/PHP.
-- Cada operación expuesta incluye `x-asgard-behavior` con hechos semánticos trazables: acceso a datos, JWT consumido/producido, condiciones, response body funcional, llamadas locales, integraciones salientes, efectos laterales y unresolved.
-- `codigo`, `estado` y `mensaje` del body se registran como campos funcionales y no se transforman en HTTP status; solo `withStatus(...)` demuestra status HTTP explícito.
-- v0.7.0 registra cobertura objetiva de contract enrichment y semantic enrichment, y mantiene un blocker explícito `contract-enrichment-v0.7.0-coverage-gate`; por tanto el `audit` permanece `partial` aunque `discovery_complete=true`.
-- Los detectores de consumidores HTTP enmascaran comentarios antes de buscar llamadas activas, preservando líneas/evidencia y evitando falsos positivos de código comentado.
-
-Más detalle: [`docs/audit-artifacts.md`](docs/audit-artifacts.md).
-
-## Correlación proveedor-consumidor v0.6
+## Correlación provider/consumer
 
 ```bash
 asgard-api-auditor correlate \
-  --findings warehouse-audit/findings.json \
-  --findings mobile-audit/findings.json \
+  --findings repo-a/findings.json \
+  --findings repo-b/findings.json \
   --output correlation-results
 ```
 
-El comando genera y valida atómicamente:
+Genera:
 
 - `correlations.json`
 - `api-relations.md`
 
-La correlación opera sobre artifacts `findings.json`, no sobre scanners acoplados entre repositorios. La clave MVP es estrictamente `HTTP method + normalized path shape`: solo se normalizan nombres de parámetros de ruta, preservando segmentos literales, cantidad de segmentos, método y semántica de slash final.
+Estados principales:
 
-Estados:
+- `matched_confirmed`
+- `matched_unique_candidate`
+- `ambiguous`
+- `unmatched`
 
-- `matched_confirmed`: existe identidad de proveedor explícita en el artifact del consumidor y coincide con un proveedor.
-- `matched_unique_candidate`: un único proveedor comparte método y shape, pero no está probado como dependencia runtime.
-- `ambiguous`: más de un proveedor comparte método y shape; no se elige ninguno.
-- `unmatched`: no existe candidato por método y shape.
+La correlación HTTP no utiliza fuzzy matching, heurísticas por nombre de repositorio ni mappings manuales.
 
-No hay fuzzy matching, heurísticas por host, nombres de repositorio, mappings manuales ni clasificación automática de externos. SOAP permanece fuera de la correlación HTTP.
-
-Más detalle: [`docs/output-contracts.md`](docs/output-contracts.md).
-
-## Catálogo API canónico v0.8
-
-```bash
-asgard-api-auditor catalog-api \
-  --findings api-audit-output/findings.json \
-  --output api-catalog.json
-```
-
-`api-catalog.json` conserva endpoints expuestos y consumidos como direcciones distintas. La identidad estable del endpoint se deriva solo de dirección, método, path shape y un namespace estable explícito si se proporciona; `api_id` es agrupación independiente y no cambia el `endpoint_id`.
-
-## Compatibilidad reference/candidate v0.8
+## Compatibilidad reference/candidate
 
 ```bash
 asgard-api-auditor compare-api \
@@ -140,9 +247,16 @@ asgard-api-auditor compare-api \
   --gate-mode fail_closed
 ```
 
-Por defecto, todo endpoint del reference dentro del scope seleccionado es required. `report` nunca falla el gate, `fail_on_breaking` falla por cambios breaking y `fail_closed` falla por breaking o unknown materiales. `observed_equal` describe igualdad de observaciones, no compatibilidad probada.
+Clasificaciones principales:
 
-## Compatibilidad provider/consumer v0.8
+- `same`
+- `additive`
+- `breaking`
+- `unknown`
+
+`unknown` material bloquea `fail_closed`.
+
+## Compatibilidad provider/consumer
 
 ```bash
 asgard-api-auditor check-consumer-compatibility \
@@ -151,66 +265,49 @@ asgard-api-auditor check-consumer-compatibility \
   --output consumer-compatibility-output
 ```
 
-Por defecto, todo endpoint consumido dentro del scope seleccionado es una required dependency y el gate recomendado es `fail_closed`. El provider debe aceptar todos los requests que el consumer puede producir y producir al menos los datos/responses que el consumer demuestra necesitar. Unknown material permanece unknown; no se infiere tolerancia.
+Por defecto, todo endpoint consumido dentro del scope seleccionado se trata como required dependency. El provider debe demostrar que acepta los requests producidos por el consumer y que puede producir los datos/responses que el consumer necesita.
 
-## Arquitectura
+Ausencia de conflicto no equivale a compatibilidad demostrada.
 
-```text
-Repositorios ASGARD
-        |
-        v
-inventory (v0.3)
-        |
-        v
-discover (v0.4)
-        |
-        +--> endpoints expuestos
-        +--> endpoints consumidos
-        +--> integraciones SOAP
-        +--> evidencia
-        +--> cobertura por detector
-        +--> unresolved / unsupported
-        |
-        v
-audit artifacts (v0.7)
-        +--> openapi.yaml
-        +--> api-knowledge.md
-        +--> findings.json
-        +--> audit-report.md
-        |
-        v
-api catalog (v0.8)
-        +--> stable API contract catalog
-        +--> reference/candidate compatibility
-        +--> provider/consumer compatibility
-        +--> breaking-change gates
-```
+## Modelo de seguridad y semántica conservadora
 
-## Cobertura
+- Solo se generan facts demostrables desde código y artefactos versionados.
+- OpenAPI contiene únicamente endpoints HTTP expuestos.
+- Las APIs consumidas permanecen como consumers; no se transforman en providers.
+- SOAP nunca se convierte artificialmente en REST.
+- Raw JWT en `Authorization` permanece raw JWT; no se convierte en `Bearer` salvo evidencia explícita.
+- `codigo`, `estado` y `mensaje` en JSON no se interpretan como HTTP status.
+- Los datos desconocidos permanecen `unknown`.
+- La evidencia y los commits forman parte de la trazabilidad de los outputs.
 
-`discovery_complete=true` solo puede producirse cuando el inventario terminó sin huecos conocidos, existe al menos un detector aplicable, todos los detectores ejecutados están soportados y no existen patrones o superficies pendientes.
+## Documentación técnica
 
-`audit status=complete` exige además que el contrato behavioral esté reconstruido y validado. En v0.7.0 el audit permanece intencionadamente `partial`: existe enrichment Slim/PHP semántico parcial y trazable, y la correlación se genera en artifacts separados para evaluación explícita antes de futuros gates de breaking changes.
-
-Encontrar cero endpoints nunca se interpreta automáticamente como ausencia de APIs.
-
-## Requisitos
-
-- Python 3.11+
-- Git
-- Node.js 20.19+ o 22.12+ para validar OpenAPI con Redocly CLI 2.x
+- [`docs/audit-method.md`](docs/audit-method.md) — método completo de auditoría y completion gate.
+- [`docs/architecture.md`](docs/architecture.md) — arquitectura interna.
+- [`docs/technical-inventory.md`](docs/technical-inventory.md) — inventario técnico.
+- [`docs/endpoint-discovery.md`](docs/endpoint-discovery.md) — discovery y reglas de cobertura.
+- [`docs/audit-artifacts.md`](docs/audit-artifacts.md) — artefactos generados.
+- [`docs/output-contracts.md`](docs/output-contracts.md) — contratos machine-readable.
+- [`docs/coverage-model.md`](docs/coverage-model.md) — modelo de cobertura.
+- [`docs/security-and-redaction.md`](docs/security-and-redaction.md) — seguridad y redacción.
+- [`docs/testing.md`](docs/testing.md) — estrategia de testing.
+- [`docs/supported-stacks.md`](docs/supported-stacks.md) — matriz de tecnologías soportadas.
 
 ## Desarrollo local
 
 ```bash
 python -m venv .venv
-pip install -e .
-pip install -r requirements-dev.lock
+python -m pip install -e .
+python -m pip install -r requirements-dev.lock
 ruff check .
 python -m compileall -q src scripts
 python -m unittest discover -s tests -v
 python scripts/validate_contracts.py
 ```
+
+## Alcance futuro
+
+Los catálogos canónicos están diseñados para poder alimentar capacidades cross-repository posteriores. El diseño de una capa central de conocimiento, registry o dependency graph se mantiene fuera del alcance de esta documentación hasta definir su arquitectura.
 
 ## Licencia
 
