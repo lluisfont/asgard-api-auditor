@@ -156,7 +156,35 @@ def _field_names_from_schema(schema: object) -> list[str]:
 def _required_from_schema(schema: object) -> list[str]:
     if not isinstance(schema, dict):
         return []
-    return _string_list(schema.get("required"))
+    fields = set(_string_list(schema.get("required")))
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for name, field_schema in properties.items():
+            if (
+                isinstance(name, str)
+                and isinstance(field_schema, dict)
+                and field_schema.get("x-asgard-requiredness") == "required"
+            ):
+                fields.add(name)
+    fields.update(_string_list(schema.get("x-asgard-required-fields")))
+    return sorted(fields)
+
+
+def _optional_from_schema(schema: object) -> list[str]:
+    if not isinstance(schema, dict):
+        return []
+    fields = set(_string_list(schema.get("x-asgard-optional-fields")))
+    fields.update(_string_list(schema.get("x-asgard-optional")))
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for name, field_schema in properties.items():
+            if (
+                isinstance(name, str)
+                and isinstance(field_schema, dict)
+                and field_schema.get("x-asgard-requiredness") == "optional"
+            ):
+                fields.add(name)
+    return sorted(fields)
 
 
 def _request_contract(endpoint: dict[str, object]) -> dict[str, object]:
@@ -164,8 +192,12 @@ def _request_contract(endpoint: dict[str, object]) -> dict[str, object]:
     request = source if isinstance(source, dict) else {}
     fields = sorted(set(_string_list(request.get("fields")) + _field_names_from_schema(request.get("body_schema"))))
     required = _required_from_schema(request.get("body_schema"))
-    optional = sorted(field for field in fields if field not in set(required))
-    parameters = _as_list(request.get("parameters"))
+    optional = sorted(set(_optional_from_schema(request.get("body_schema"))) & set(fields) - set(required))
+    parameters = [
+        _parameter_contract(item)
+        for item in _as_list(request.get("parameters"))
+        if isinstance(item, dict)
+    ]
     return {
         "parameters": parameters,
         "content_type": request.get("content_type"),
@@ -176,6 +208,16 @@ def _request_contract(endpoint: dict[str, object]) -> dict[str, object]:
         "unknown_requiredness_fields": sorted(set(fields) - set(required) - set(optional)),
         "evidence": [],
         "unresolved": [],
+    }
+
+
+def _parameter_contract(parameter: dict[str, object]) -> dict[str, object]:
+    return {
+        "name": parameter.get("name"),
+        "location": parameter.get("location"),
+        "required": parameter.get("required") if isinstance(parameter.get("required"), bool) else None,
+        "schema": parameter.get("schema") if isinstance(parameter.get("schema"), dict) else None,
+        "evidence": _as_list(parameter.get("evidence")),
     }
 
 
@@ -218,15 +260,25 @@ def _headers(endpoint: dict[str, object]) -> list[dict[str, object]]:
     headers = []
     for parameter in _as_list(parameters):
         if isinstance(parameter, dict) and parameter.get("location") == "header":
-            headers.append(dict(parameter))
+            headers.append(_parameter_contract(parameter))
     return sorted(headers, key=lambda item: str(item.get("name", "")))
 
 
 def _contract_status(endpoint: dict[str, object]) -> str:
+    mapping = {
+        "evaluated_complete": "complete",
+        "evaluated_partial": "partial",
+        "required_not_complete": "partial",
+        "not_applicable": "not_applicable",
+        "complete": "complete",
+        "partial": "partial",
+        "unresolved": "unresolved",
+        "unknown": "unknown",
+    }
     notes = _as_list(endpoint.get("notes"))
     for note in notes:
         if isinstance(note, str) and note.startswith("contract_enrichment_status="):
-            return note.split("=", 1)[1] or "unknown"
+            return mapping.get(note.split("=", 1)[1], "unknown")
     return "unknown"
 
 

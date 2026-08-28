@@ -126,6 +126,10 @@ def _request_checks(consumer: dict[str, object], provider: dict[str, object]) ->
     consumer_fields = _strings(consumer_request.get("fields"))
     provider_fields = _strings(provider_request.get("fields"))
     provider_required = _strings(provider_request.get("required_fields"))
+    for field in sorted(_strings(consumer_request.get("unknown_requiredness_fields"))):
+        checks.append({"status": "unknown", "code": "consumer_request_requiredness_unknown", "detail": field})
+    for field in sorted(_strings(provider_request.get("unknown_requiredness_fields"))):
+        checks.append({"status": "unknown", "code": "provider_request_requiredness_unknown", "detail": field})
     for field in sorted(provider_required - consumer_fields):
         checks.append({"status": "breaking", "code": "provider_requires_unsent_request_field", "detail": field})
     extra_sent = consumer_fields - provider_fields
@@ -152,6 +156,10 @@ def _response_checks(consumer: dict[str, object], provider: dict[str, object]) -
     provider_response = _as_dict(provider.get("response"))
     required_fields = _strings(consumer_response.get("fields_used_by_consumer")) or _strings(consumer_response.get("required_fields"))
     provider_fields = _strings(provider_response.get("fields"))
+    if not required_fields:
+        checks.append({"status": "unknown", "code": "consumer_response_requirements_unknown", "detail": "no consumed response requirements were demonstrated"})
+    if not provider_fields and provider_response.get("schema") is None:
+        checks.append({"status": "unknown", "code": "provider_response_schema_unknown", "detail": "provider response schema missing"})
     for field in sorted(required_fields - provider_fields):
         checks.append({"status": "breaking", "code": "provider_missing_required_response_field", "detail": field})
     extra_provider_fields = provider_fields - required_fields
@@ -171,6 +179,10 @@ def _response_checks(consumer: dict[str, object], provider: dict[str, object]) -
             checks.append({"status": "breaking", "code": "response_field_type_incompatible", "detail": field})
     consumer_statuses = {code for code in _as_list(consumer_response.get("status_codes")) if isinstance(code, int)}
     provider_statuses = {code for code in _as_list(provider_response.get("status_codes")) if isinstance(code, int)}
+    if not consumer_statuses:
+        checks.append({"status": "unknown", "code": "consumer_status_codes_unknown", "detail": "consumer status expectations missing"})
+    if not provider_statuses:
+        checks.append({"status": "unknown", "code": "provider_status_codes_unknown", "detail": "provider status evidence missing"})
     for code in sorted(consumer_statuses - provider_statuses):
         checks.append({"status": "breaking", "code": "provider_missing_required_status_code", "detail": str(code)})
     extra_statuses = provider_statuses - consumer_statuses
@@ -191,6 +203,15 @@ def _parameter_checks(consumer: dict[str, object], provider: dict[str, object]) 
         for item in _as_list(consumer.get("parameters"))
         if isinstance(item, dict)
     }
+    for source, parameters in (("consumer", consumer.get("parameters")), ("provider", provider.get("parameters"))):
+        for item in _as_list(parameters):
+            if not isinstance(item, dict):
+                continue
+            detail = f"{item.get('location')}:{item.get('name')}"
+            if item.get("required") is None:
+                checks.append({"status": "unknown", "code": f"{source}_parameter_requiredness_unknown", "detail": detail})
+            if item.get("schema") is None:
+                checks.append({"status": "unknown", "code": f"{source}_parameter_type_unknown", "detail": detail})
     for item in _as_list(provider.get("parameters")):
         if not isinstance(item, dict) or item.get("required") is not True:
             continue
@@ -204,12 +225,20 @@ def _content_type_checks(consumer: dict[str, object], provider: dict[str, object
     checks: list[dict[str, object]] = []
     consumer_request = _as_dict(consumer.get("request"))
     provider_request = _as_dict(provider.get("request"))
+    consumer_response = _as_dict(consumer.get("response"))
+    provider_response = _as_dict(provider.get("response"))
     consumer_type = consumer_request.get("content_type")
     provider_type = provider_request.get("content_type")
     if consumer_type and provider_type and consumer_type != provider_type:
         checks.append({"status": "breaking", "code": "request_content_type_incompatible", "detail": f"{consumer_type} != {provider_type}"})
     elif consumer_type is None or provider_type is None:
         checks.append({"status": "unknown", "code": "request_content_type_unknown", "detail": "missing content type evidence"})
+    consumer_response_type = consumer_response.get("content_type")
+    provider_response_type = provider_response.get("content_type")
+    if consumer_response_type and provider_response_type and consumer_response_type != provider_response_type:
+        checks.append({"status": "breaking", "code": "response_content_type_incompatible", "detail": f"{consumer_response_type} != {provider_response_type}"})
+    elif consumer_response_type is None or provider_response_type is None:
+        checks.append({"status": "unknown", "code": "response_content_type_unknown", "detail": "missing response content type evidence"})
     return checks
 
 
@@ -341,6 +370,12 @@ def build_consumer_compatibility(
         "missing": sum(1 for item in records if item["status"] == "missing"),
         "ambiguous": sum(1 for item in records if item["status"] == "ambiguous"),
         "unknown": sum(1 for item in records if item["status"] == "unknown"),
+        "security_drift": sum(
+            1
+            for item in records
+            for check in _as_list(item.get("checks"))
+            if isinstance(check, dict) and str(check.get("code")).startswith("security_policy_drift")
+        ),
         "required_dependencies": len(required_consumed),
         "excluded_dependencies": len(excluded_consumed),
     }
@@ -392,6 +427,7 @@ def render_consumer_compatibility_markdown(payload: dict[str, object]) -> str:
         f"- missing: {summary.get('missing', 0)}",
         f"- ambiguous: {summary.get('ambiguous', 0)}",
         f"- unknown: {summary.get('unknown', 0)}",
+        f"- security drift: {summary.get('security_drift', 0)}",
         "",
         "## Dependencies",
     ]

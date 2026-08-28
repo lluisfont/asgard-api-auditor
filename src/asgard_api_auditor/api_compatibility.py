@@ -21,6 +21,24 @@ from .schema_validation import SchemaValidationError, validate_json_schema
 
 SCHEMAS_PACKAGE = "asgard_api_auditor.schemas"
 GateMode = Literal["report", "fail_on_breaking", "fail_closed"]
+ORDER_INSENSITIVE_KEYS = {
+    "endpoints",
+    "evidence",
+    "fields",
+    "required_fields",
+    "optional_fields",
+    "unknown_requiredness_fields",
+    "status_codes",
+    "parameters",
+    "headers",
+    "unresolved",
+    "notes",
+}
+VOLATILE_CATALOG_KEYS = {
+    "catalog_id",
+    "generated_at",
+    "input_hashes",
+}
 
 
 class ApiCompatibilityError(ValueError):
@@ -88,6 +106,61 @@ def _strings(value: object) -> set[str]:
     return {item for item in _as_list(value) if isinstance(item, str)}
 
 
+def _canonical_artifact(payload: dict[str, object]) -> object:
+    def normalize(value: object, key: str | None = None) -> object:
+        if isinstance(value, dict):
+            normalized: dict[str, object] = {}
+            for child_key, child_value in value.items():
+                if child_key in VOLATILE_CATALOG_KEYS:
+                    continue
+                if child_key == "metadata":
+                    if not isinstance(child_value, dict):
+                        continue
+                    child = {
+                        metadata_key: metadata_value
+                        for metadata_key, metadata_value in child_value.items()
+                        if metadata_key
+                        not in {
+                            "findings_audit_id",
+                            "findings_sha256",
+                            "source_ref",
+                            "source_commit",
+                        }
+                    }
+                    normalized[child_key] = normalize(child, child_key)
+                    continue
+                normalized[child_key] = normalize(child_value, child_key)
+            return {child_key: normalized[child_key] for child_key in sorted(normalized)}
+        if isinstance(value, list):
+            normalized_list = [normalize(item) for item in value]
+            if key == "endpoints":
+                return sorted(
+                    normalized_list,
+                    key=lambda item: (
+                        str(item.get("endpoint_id")) if isinstance(item, dict) else "",
+                        _canonical_json(item),
+                    ),
+                )
+            if key in ORDER_INSENSITIVE_KEYS:
+                return sorted(normalized_list, key=_canonical_json)
+            return normalized_list
+        return value
+
+    return normalize(payload)
+
+
+def artifact_equal(reference: dict[str, object], candidate: dict[str, object]) -> bool:
+    """Compare catalog artifacts after removing volatile metadata."""
+
+    return _canonical_json(_canonical_artifact(reference)) == _canonical_json(
+        _canonical_artifact(candidate)
+    )
+
+
+def _canonical_endpoint(endpoint: dict[str, object]) -> object:
+    return _canonical_artifact({"endpoint": endpoint})["endpoint"]  # type: ignore[index]
+
+
 def _endpoint_values(endpoint: dict[str, object]) -> set[str]:
     method = str(endpoint.get("method", "")).upper()
     path = str(endpoint.get("normalized_path", ""))
@@ -136,12 +209,32 @@ def _material_unknown(endpoint: dict[str, object]) -> list[str]:
         reasons.append("contract_status")
     if endpoint.get("semantic_status") in {None, "unknown", "partial", "unresolved"}:
         reasons.append("semantic_status")
-    if request.get("body_schema") is None and not request.get("fields"):
+    if _strings(request.get("unknown_requiredness_fields")):
+        reasons.append("request_requiredness")
+    if request.get("fields") and request.get("body_schema") is None:
         reasons.append("request")
+    if request.get("fields") and request.get("content_type") is None:
+        reasons.append("request_content_type")
     if not response.get("status_codes") or response.get("schema") is None:
         reasons.append("response")
+    if response.get("fields") and response.get("content_type") is None:
+        reasons.append("response_content_type")
     if auth.get("required") is None:
         reasons.append("authentication")
+    for parameter in _as_list(endpoint.get("parameters")):
+        if not isinstance(parameter, dict):
+            continue
+        if parameter.get("required") is None:
+            reasons.append(f"{parameter.get('location')}_parameter_requiredness")
+        if parameter.get("schema") is None:
+            reasons.append(f"{parameter.get('location')}_parameter_type")
+    if endpoint.get("semantic_status") == "complete":
+        behavior = _as_dict(endpoint.get("behavior"))
+        if behavior.get("summary") is None and not any(
+            behavior.get(key)
+            for key in ("data_access", "local_calls", "outbound_integrations", "conditions", "side_effects")
+        ):
+            reasons.append("behavior")
     if _as_list(endpoint.get("unresolved")) or _as_list(request.get("unresolved")) or _as_list(response.get("unresolved")):
         reasons.append("unresolved")
     return sorted(set(reasons))
@@ -167,11 +260,19 @@ def _compare_request(reference: dict[str, object], candidate: dict[str, object])
         findings.append({"classification": "breaking", "code": "required_request_field_removed", "detail": field})
     for field in added_required:
         findings.append({"classification": "breaking", "code": "required_request_field_added", "detail": field})
+    for field in sorted(_strings(reference_request.get("unknown_requiredness_fields")) | _strings(candidate_request.get("unknown_requiredness_fields"))):
+        findings.append({"classification": "unknown", "code": "request_field_requiredness_unknown", "detail": field})
     for field in sorted(reference_fields & candidate_fields):
         before = _field_type(reference_request.get("body_schema"), field)
         after = _field_type(candidate_request.get("body_schema"), field)
         if before is not None and after is not None and before != after:
             findings.append({"classification": "breaking", "code": "request_field_type_changed", "detail": field})
+    before_type = reference_request.get("content_type")
+    after_type = candidate_request.get("content_type")
+    if before_type and after_type and before_type != after_type:
+        findings.append({"classification": "breaking", "code": "request_content_type_incompatible", "detail": f"{before_type} != {after_type}"})
+    elif (reference_fields or candidate_fields) and (before_type is None or after_type is None):
+        findings.append({"classification": "unknown", "code": "request_content_type_unknown", "detail": "missing request content type evidence"})
     return findings
 
 
@@ -207,7 +308,92 @@ def _compare_response(reference: dict[str, object], candidate: dict[str, object]
             "code": "response_fields_added",
             "detail": ",".join(sorted(candidate_fields - reference_fields)),
         })
+    before_type = reference_response.get("content_type")
+    after_type = candidate_response.get("content_type")
+    if before_type and after_type and before_type != after_type:
+        findings.append({"classification": "breaking", "code": "response_content_type_incompatible", "detail": f"{before_type} != {after_type}"})
+    elif (reference_response.get("schema") is not None or candidate_response.get("schema") is not None) and (before_type is None or after_type is None):
+        findings.append({"classification": "unknown", "code": "response_content_type_unknown", "detail": "missing response content type evidence"})
     return findings
+
+
+def _parameter_key(parameter: dict[str, object]) -> tuple[str, str]:
+    return (str(parameter.get("location")), str(parameter.get("name")))
+
+
+def _parameter_type(parameter: dict[str, object]) -> object:
+    schema = _as_dict(parameter.get("schema"))
+    return schema.get("type") or schema.get("format")
+
+
+def _parameter_label(key: tuple[str, str]) -> str:
+    return f"{key[0]}:{key[1]}"
+
+
+def _compare_parameters(reference: dict[str, object], candidate: dict[str, object]) -> list[dict[str, object]]:
+    findings: list[dict[str, object]] = []
+    reference_params = {
+        _parameter_key(item): item
+        for item in _as_list(reference.get("parameters"))
+        if isinstance(item, dict)
+    }
+    candidate_params = {
+        _parameter_key(item): item
+        for item in _as_list(candidate.get("parameters"))
+        if isinstance(item, dict)
+    }
+    for key, parameter in sorted(reference_params.items()):
+        if key not in candidate_params:
+            code = "path_parameter_removed" if key[0] == "path" else "parameter_removed"
+            findings.append({"classification": "breaking", "code": code, "detail": _parameter_label(key)})
+            continue
+        candidate_parameter = candidate_params[key]
+        before_required = parameter.get("required")
+        after_required = candidate_parameter.get("required")
+        if before_required is None or after_required is None:
+            findings.append({"classification": "unknown", "code": "parameter_requiredness_unknown", "detail": _parameter_label(key)})
+        elif before_required is False and after_required is True:
+            findings.append({"classification": "breaking", "code": "parameter_requiredness_became_stricter", "detail": _parameter_label(key)})
+        before_type = _parameter_type(parameter)
+        after_type = _parameter_type(candidate_parameter)
+        if before_type is None or after_type is None:
+            findings.append({"classification": "unknown", "code": "parameter_type_unknown", "detail": _parameter_label(key)})
+        elif before_type != after_type:
+            code = "path_parameter_incompatible_type" if key[0] == "path" else "parameter_incompatible_type"
+            findings.append({"classification": "breaking", "code": code, "detail": _parameter_label(key)})
+    for key, parameter in sorted(candidate_params.items()):
+        if key in reference_params:
+            continue
+        required = parameter.get("required")
+        if required is True:
+            code = "required_header_added" if key[0] == "header" else "required_parameter_added"
+            findings.append({"classification": "breaking", "code": code, "detail": _parameter_label(key)})
+        elif required is False:
+            code = "optional_query_parameter_added" if key[0] == "query" else "optional_parameter_added"
+            findings.append({"classification": "additive", "code": code, "detail": _parameter_label(key)})
+        else:
+            code = "header_compatibility_unknown" if key[0] == "header" else "parameter_requiredness_unknown"
+            findings.append({"classification": "unknown", "code": code, "detail": _parameter_label(key)})
+    return findings
+
+
+def _material_behavior(endpoint: dict[str, object]) -> dict[str, object]:
+    behavior = _as_dict(endpoint.get("behavior"))
+    return {
+        "data_access": behavior.get("data_access") or [],
+        "local_calls": behavior.get("local_calls") or [],
+        "outbound_integrations": behavior.get("outbound_integrations") or [],
+        "side_effects": behavior.get("side_effects") or [],
+        "response_semantics": behavior.get("response_semantics") or {},
+    }
+
+
+def _compare_behavior(reference: dict[str, object], candidate: dict[str, object]) -> list[dict[str, object]]:
+    if reference.get("semantic_status") in {"unknown", "partial", "unresolved"} or candidate.get("semantic_status") in {"unknown", "partial", "unresolved"}:
+        return [{"classification": "unknown", "code": "semantic_behavior_unknown", "detail": "material behavior is not fully reconstructed"}]
+    if _material_behavior(reference) != _material_behavior(candidate):
+        return [{"classification": "breaking", "code": "semantic_behavior_incompatible", "detail": "demonstrated behavior facts differ"}]
+    return []
 
 
 def _auth_strength(auth: dict[str, object]) -> int:
@@ -261,12 +447,15 @@ def _classification(findings: list[dict[str, object]], unknown_reasons: list[str
 
 def _compare_endpoint(reference: dict[str, object], candidate: dict[str, object], *, enforce_security_policy: bool) -> dict[str, object]:
     findings = (
-        _compare_request(reference, candidate)
+        _compare_parameters(reference, candidate)
+        + _compare_request(reference, candidate)
         + _compare_response(reference, candidate)
         + _compare_auth(reference, candidate, enforce_security_policy=enforce_security_policy)
+        + _compare_behavior(reference, candidate)
     )
     unknown_reasons = _material_unknown(reference) + _material_unknown(candidate)
     observed_equal = _observable(reference) == _observable(candidate)
+    endpoint_artifact_equal = _canonical_endpoint(reference) == _canonical_endpoint(candidate)
     classification = _classification(findings, unknown_reasons)
     return {
         "reference_endpoint_id": reference["endpoint_id"],
@@ -275,7 +464,7 @@ def _compare_endpoint(reference: dict[str, object], candidate: dict[str, object]
         "path_shape": reference["path_shape"],
         "classification": classification,
         "observed_equal": observed_equal,
-        "artifact_equal": observed_equal,
+        "artifact_equal": endpoint_artifact_equal,
         "required": True,
         "findings": findings,
         "unknown_reasons": sorted(set(unknown_reasons)),
@@ -283,16 +472,25 @@ def _compare_endpoint(reference: dict[str, object], candidate: dict[str, object]
     }
 
 
-def _candidate_index(endpoints: list[dict[str, object]]) -> dict[tuple[str, str, str], dict[str, object]]:
-    indexed: dict[tuple[str, str, str], dict[str, object]] = {}
+def _unique_endpoint_index(
+    endpoints: list[dict[str, object]], *, catalog_role: str
+) -> dict[tuple[str, str, str], list[dict[str, object]]]:
+    indexed: dict[tuple[str, str, str], list[dict[str, object]]] = {}
     for endpoint in endpoints:
-        indexed[
-            (
-                str(endpoint.get("direction")),
-                str(endpoint.get("method")),
-                str(endpoint.get("path_shape")),
-            )
-        ] = endpoint
+        key = (
+            str(endpoint.get("direction")),
+            str(endpoint.get("method")),
+            str(endpoint.get("path_shape")),
+        )
+        indexed.setdefault(key, []).append(endpoint)
+    duplicates = {
+        key: values
+        for key, values in indexed.items()
+        if len(values) > 1
+    }
+    if duplicates:
+        labels = ", ".join(f"{key[0]} {key[1]} {key[2]}" for key in sorted(duplicates))
+        raise ApiCompatibilityError(f"{catalog_role} catalog contains duplicate stable identity: {labels}")
     return indexed
 
 
@@ -328,7 +526,8 @@ def build_api_compatibility(
         include=include_endpoints,
         exclude=exclude_endpoints,
     )
-    candidates = _candidate_index(candidate_endpoints)
+    _unique_endpoint_index(reference_endpoints, catalog_role="Reference")
+    candidates = _unique_endpoint_index(candidate_endpoints, catalog_role="Candidate")
     records: list[dict[str, object]] = []
     matched_candidate_ids: set[str] = set()
     for endpoint in required_reference:
@@ -337,8 +536,8 @@ def build_api_compatibility(
             str(endpoint.get("method")),
             str(endpoint.get("path_shape")),
         )
-        match = candidates.get(key)
-        if match is None:
+        matches = candidates.get(key, [])
+        if not matches:
             records.append({
                 "reference_endpoint_id": endpoint["endpoint_id"],
                 "candidate_endpoint_id": None,
@@ -353,6 +552,7 @@ def build_api_compatibility(
                 "evidence": _as_list(endpoint.get("evidence")),
             })
             continue
+        match = matches[0]
         matched_candidate_ids.add(str(match["endpoint_id"]))
         records.append(
             _compare_endpoint(endpoint, match, enforce_security_policy=enforce_security_policy)
@@ -396,6 +596,12 @@ def build_api_compatibility(
         "auditor_version": __version__,
         "generated_at": datetime.now(UTC).isoformat(),
         "mode": "reference_candidate",
+        "artifact_equal": artifact_equal(reference.payload, candidate.payload),
+        "artifact_canonicalization": {
+            "volatile_metadata": sorted(VOLATILE_CATALOG_KEYS),
+            "order_insensitive_arrays": sorted(ORDER_INSENSITIVE_KEYS),
+            "endpoint_order": "endpoint_id",
+        },
         "inputs": {
             "reference_catalog_id": reference.payload["catalog_id"],
             "candidate_catalog_id": candidate.payload["catalog_id"],

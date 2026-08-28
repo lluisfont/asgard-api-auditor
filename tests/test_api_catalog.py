@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from asgard_api_auditor.catalog import build_api_catalog
+from asgard_api_auditor.catalog import CatalogError, build_api_catalog, validate_api_catalog
 
 
 def _coverage() -> dict[str, object]:
@@ -69,6 +69,81 @@ def _write_findings(path: Path, endpoints: list[dict[str, object]]) -> None:
 
 
 class ApiCatalogTests(unittest.TestCase):
+    def test_body_fields_without_requiredness_are_unknown_not_optional(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = Path(tmp) / "findings.json"
+            endpoint = _endpoint("exposed", "POST", "/comments")
+            endpoint["request"] = {
+                "content_type": "application/json",
+                "body_schema": {
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}, "comment": {"type": "string"}},
+                },
+                "fields": ["id", "comment"],
+            }
+            _write_findings(findings, [endpoint])
+
+            request = build_api_catalog(findings)["endpoints"][0]["request"]
+
+            self.assertEqual(request["required_fields"], [])
+            self.assertEqual(request["optional_fields"], [])
+            self.assertEqual(request["unknown_requiredness_fields"], ["comment", "id"])
+
+    def test_body_requiredness_is_recorded_only_when_demonstrated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = Path(tmp) / "findings.json"
+            endpoint = _endpoint("exposed", "POST", "/comments")
+            endpoint["request"] = {
+                "content_type": "application/json",
+                "body_schema": {
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}, "comment": {"type": "string"}},
+                    "required": ["id"],
+                },
+                "fields": ["id", "comment"],
+            }
+            _write_findings(findings, [endpoint])
+
+            request = build_api_catalog(findings)["endpoints"][0]["request"]
+
+            self.assertEqual(request["required_fields"], ["id"])
+            self.assertEqual(request["optional_fields"], [])
+            self.assertEqual(request["unknown_requiredness_fields"], ["comment"])
+
+    def test_body_optionalness_requires_positive_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = Path(tmp) / "findings.json"
+            endpoint = _endpoint("exposed", "POST", "/comments")
+            endpoint["request"] = {
+                "content_type": "application/json",
+                "body_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "comment": {"type": "string", "x-asgard-requiredness": "optional"},
+                    },
+                    "required": ["id"],
+                },
+                "fields": ["id", "comment"],
+            }
+            _write_findings(findings, [endpoint])
+
+            request = build_api_catalog(findings)["endpoints"][0]["request"]
+
+            self.assertEqual(request["required_fields"], ["id"])
+            self.assertEqual(request["optional_fields"], ["comment"])
+            self.assertEqual(request["unknown_requiredness_fields"], [])
+
+    def test_invalid_contract_status_fails_schema_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = Path(tmp) / "findings.json"
+            _write_findings(findings, [_endpoint("exposed", "GET", "/health")])
+            catalog = build_api_catalog(findings)
+            catalog["endpoints"][0]["contract_status"] = "compelte"
+
+            with self.assertRaises(CatalogError):
+                validate_api_catalog(catalog)
+
     def test_catalog_preserves_endpoint_direction_without_provider_conversion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             findings = Path(tmp) / "findings.json"

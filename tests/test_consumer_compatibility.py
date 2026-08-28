@@ -67,6 +67,7 @@ def _endpoint(
             "fields_used_by_consumer": response_used or [],
             "tolerates_additional_fields": tolerates_additional_fields,
             "tolerates_additional_statuses": True,
+            "status_code_compatibility": {"default": "compatible"},
             "evidence": [],
             "unresolved": [],
         },
@@ -74,7 +75,7 @@ def _endpoint(
         "authentication": {"authentication": "jwt" if auth_required else None, "authorization": None, "schemes": [], "required": auth_required, "evidence": [], "unresolved": []},
         "security": {"policy": "unknown", "drift": []},
         "behavior": {"summary": "fixture", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {}},
-        "contract_status": "evaluated_complete",
+        "contract_status": "complete",
         "semantic_status": "complete",
         "confidence": "confirmed",
         "confidence_reason": "fixture",
@@ -206,6 +207,26 @@ class ConsumerCompatibilityTests(unittest.TestCase):
 
             self.assertEqual(payload["records"][0]["status"], "breaking")
             self.assertEqual(payload["gate"]["status"], "failed")
+
+    def test_empty_matched_contracts_remain_unknown_not_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            consumer = root / "consumer.json"
+            provider = root / "provider.json"
+            consumer_endpoint = _endpoint("consumed", "GET", "/empty")
+            provider_endpoint = _endpoint("exposed", "GET", "/empty")
+            consumer_endpoint["response"]["status_codes"] = []
+            consumer_endpoint["response"]["fields_used_by_consumer"] = []
+            provider_endpoint["response"]["status_codes"] = []
+            provider_endpoint["response"]["schema"] = None
+            _catalog(consumer, [consumer_endpoint], repo="consumer")
+            _catalog(provider, [provider_endpoint], repo="provider")
+
+            payload = build_consumer_compatibility([consumer], [provider])
+
+            self.assertEqual(payload["records"][0]["status"], "unknown")
+            self.assertEqual(payload["gate"]["status"], "failed")
+            self.assertIn("consumer_response_requirements_unknown", [item["code"] for item in payload["records"][0]["checks"]])
 
 
 if __name__ == "__main__":

@@ -169,6 +169,17 @@ def validate_v08_schemas() -> None:
     endpoint_required = set(catalog["$defs"]["endpoint"]["required"])
     for key in ("endpoint_id", "api_id", "stable_identity", "direction", "method", "path_shape"):
         require(key in endpoint_required, f"api catalog endpoint must require {key}")
+    endpoint_props = catalog["$defs"]["endpoint"]["properties"]
+    require(
+        set(endpoint_props["contract_status"]["enum"])
+        == {"complete", "partial", "unresolved", "not_applicable", "unknown"},
+        "api catalog contract_status must be a closed enum",
+    )
+    require(
+        set(endpoint_props["semantic_status"]["enum"])
+        == {"complete", "partial", "unresolved", "not_applicable", "unknown"},
+        "api catalog semantic_status must be a closed enum",
+    )
     stable_required = set(catalog["$defs"]["stableIdentity"]["required"])
     require("api_id" not in stable_required, "stable identity must not require api_id")
     require("schema_version" not in stable_required, "stable identity must not include schema version")
