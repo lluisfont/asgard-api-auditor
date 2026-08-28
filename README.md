@@ -12,9 +12,9 @@ La pregunta operativa es:
 
 ## Estado
 
-**v0.7.0 — reconstrucción semántica determinística para OpenAPI AI-ready.**
+**v0.8.0 — catálogos API canónicos y compatibilidad cross-repository.**
 
-La v0.3 detecta tecnologías y superficies. La v0.4.x localiza endpoints HTTP expuestos/consumidos y operaciones SOAP con cobertura fail-closed. La v0.5 convierte ese discovery en artefactos auditables y reutilizables. La v0.6 añade una primera capa de relación entre consumidores y proveedores a partir de artifacts versionados. La v0.7 añade una capa semántica determinística entre el enrichment de contratos y la generación de OpenAPI/findings.
+La v0.3 detecta tecnologías y superficies. La v0.4.x localiza endpoints HTTP expuestos/consumidos y operaciones SOAP con cobertura fail-closed. La v0.5 convierte ese discovery en artefactos auditables y reutilizables. La v0.6 añade una primera capa de relación entre consumidores y proveedores a partir de artifacts versionados. La v0.7 añade una capa semántica determinística entre el enrichment de contratos y la generación de OpenAPI/findings. La v0.8 genera catálogos API canónicos y compara contratos entre reference/candidate o provider/consumer sin lógica específica por repositorio.
 
 ## Inventario técnico
 
@@ -120,6 +120,39 @@ No hay fuzzy matching, heurísticas por host, nombres de repositorio, mappings m
 
 Más detalle: [`docs/output-contracts.md`](docs/output-contracts.md).
 
+## Catálogo API canónico v0.8
+
+```bash
+asgard-api-auditor catalog-api \
+  --findings api-audit-output/findings.json \
+  --output api-catalog.json
+```
+
+`api-catalog.json` conserva endpoints expuestos y consumidos como direcciones distintas. La identidad estable del endpoint se deriva solo de dirección, método, path shape y un namespace estable explícito si se proporciona; `api_id` es agrupación independiente y no cambia el `endpoint_id`.
+
+## Compatibilidad reference/candidate v0.8
+
+```bash
+asgard-api-auditor compare-api \
+  reference-api-catalog.json \
+  candidate-api-catalog.json \
+  --output api-compatibility-output \
+  --gate-mode fail_closed
+```
+
+Por defecto, todo endpoint del reference dentro del scope seleccionado es required. `report` nunca falla el gate, `fail_on_breaking` falla por cambios breaking y `fail_closed` falla por breaking o unknown materiales. `observed_equal` describe igualdad de observaciones, no compatibilidad probada.
+
+## Compatibilidad provider/consumer v0.8
+
+```bash
+asgard-api-auditor check-consumer-compatibility \
+  --consumer-catalog consumer-api-catalog.json \
+  --provider-catalog provider-api-catalog.json \
+  --output consumer-compatibility-output
+```
+
+Por defecto, todo endpoint consumido dentro del scope seleccionado es una required dependency y el gate recomendado es `fail_closed`. El provider debe aceptar todos los requests que el consumer puede producir y producir al menos los datos/responses que el consumer demuestra necesitar. Unknown material permanece unknown; no se infiere tolerancia.
+
 ## Arquitectura
 
 ```text
@@ -146,11 +179,11 @@ audit artifacts (v0.7)
         +--> audit-report.md
         |
         v
-fases siguientes
-        +--> deeper request/response/security enrichment
-        +--> correlate
-        +--> breaking-change gate
-        +--> API Knowledge / RAG central
+api catalog (v0.8)
+        +--> stable API contract catalog
+        +--> reference/candidate compatibility
+        +--> provider/consumer compatibility
+        +--> breaking-change gates
 ```
 
 ## Cobertura

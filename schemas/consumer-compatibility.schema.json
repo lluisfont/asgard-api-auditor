@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asgard.local/schemas/consumer-compatibility.schema.json",
+  "title": "ASGARD Provider Consumer Compatibility Report",
+  "type": "object",
+  "required": ["schema_version", "compatibility_id", "auditor_version", "generated_at", "mode", "inputs", "scope", "summary", "gate", "records"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "compatibility_id": {"type": "string", "minLength": 8},
+    "auditor_version": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "mode": {"const": "provider_consumer"},
+    "inputs": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}},
+    "scope": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}},
+    "summary": {"$ref": "#/$defs/summary"},
+    "gate": {"$ref": "#/$defs/gate"},
+    "records": {"type": "array", "items": {"$ref": "#/$defs/record"}}
+  },
+  "$defs": {
+    "any": {"type": ["object", "array", "string", "integer", "number", "boolean", "null"]},
+    "summary": {
+      "type": "object",
+      "required": ["total_consumed_dependencies", "required_dependencies", "excluded_dependencies", "compatible", "breaking", "missing", "ambiguous", "unknown", "security_drift"],
+      "properties": {
+        "total_consumed_dependencies": {"type": "integer", "minimum": 0},
+        "required_dependencies": {"type": "integer", "minimum": 0},
+        "excluded_dependencies": {"type": "integer", "minimum": 0},
+        "compatible": {"type": "integer", "minimum": 0},
+        "breaking": {"type": "integer", "minimum": 0},
+        "missing": {"type": "integer", "minimum": 0},
+        "ambiguous": {"type": "integer", "minimum": 0},
+        "unknown": {"type": "integer", "minimum": 0},
+        "security_drift": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "gate": {
+      "type": "object",
+      "required": ["mode", "status"],
+      "properties": {
+        "mode": {"enum": ["report", "fail_on_breaking", "fail_closed"]},
+        "status": {"enum": ["passed", "failed"]}
+      },
+      "additionalProperties": false
+    },
+    "check": {
+      "type": "object",
+      "required": ["status", "code", "detail"],
+      "properties": {
+        "status": {"enum": ["compatible", "breaking", "unknown"]},
+        "code": {"type": "string", "minLength": 1},
+        "detail": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "record": {
+      "type": "object",
+      "required": ["consumer_endpoint_id", "provider_endpoint_id", "method", "path_shape", "status", "required", "checks", "evidence"],
+      "properties": {
+        "consumer_endpoint_id": {"type": "string", "minLength": 1},
+        "provider_endpoint_id": {"type": ["string", "null"]},
+        "method": {"type": "string", "minLength": 1},
+        "path_shape": {"type": "string", "minLength": 1},
+        "status": {"enum": ["compatible", "breaking", "missing", "ambiguous", "unknown"]},
+        "required": {"type": "boolean"},
+        "checks": {"type": "array", "items": {"$ref": "#/$defs/check"}},
+        "evidence": {"type": "array", "items": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -108,6 +108,9 @@ class _FunctionSource:
 class _AuthenticationEvidence:
     authentication: str
     evidence: Evidence
+    credential_format: str
+    scheme: str | None
+    header_semantics: str
 
 
 @dataclass
@@ -1175,9 +1178,15 @@ def _authentication_from_body(
         if _BEARER_SYNTAX.search(body):
             authentication = f"bearer JWT Authorization {algorithm}"
             note = "JWT Authorization bearer validation"
+            credential_format = "bearer_jwt"
+            scheme = "bearer"
+            header_semantics = "bearer_authorization_header"
         else:
             authentication = f"Authorization header raw JWT {algorithm}"
             note = "JWT Authorization header raw value validation"
+            credential_format = "raw_jwt"
+            scheme = None
+            header_semantics = "raw_authorization_header"
         return _AuthenticationEvidence(
             authentication=authentication,
             evidence=_evidence(
@@ -1187,6 +1196,9 @@ def _authentication_from_body(
                 body_start + match.start(),
                 note,
             ),
+            credential_format=credential_format,
+            scheme=scheme,
+            header_semantics=header_semantics,
         )
     return None
 
@@ -1316,6 +1328,9 @@ def _security(
 
     if authentication is not None:
         endpoint.authentication = authentication.authentication
+        endpoint.credential_format = authentication.credential_format
+        endpoint.scheme = authentication.scheme
+        endpoint.header_semantics = authentication.header_semantics
         endpoint.evidence.append(authentication.evidence)
         return True, True, unresolved
 

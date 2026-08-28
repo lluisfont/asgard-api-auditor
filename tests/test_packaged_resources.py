@@ -84,7 +84,13 @@ def _write_findings(path: Path, *, repository_id: str, commit: str, endpoints: l
 
 class PackagedResourcesTests(unittest.TestCase):
     def test_packaged_runtime_schemas_match_repository_contracts(self) -> None:
-        for name in ("findings.schema.json", "correlations.schema.json"):
+        for name in (
+            "findings.schema.json",
+            "correlations.schema.json",
+            "api-catalog.schema.json",
+            "api-compatibility.schema.json",
+            "consumer-compatibility.schema.json",
+        ):
             with self.subTest(schema=name):
                 repository_schema = (ROOT / "schemas" / name).read_text(encoding="utf-8")
                 packaged_schema = (ROOT / "src" / "asgard_api_auditor" / "schemas" / name).read_text(
@@ -196,6 +202,80 @@ class PackagedResourcesTests(unittest.TestCase):
             correlations = json.loads((output / "correlations.json").read_text(encoding="utf-8"))
             self.assertEqual(correlations["coverage"]["consumed_endpoints_total"], 1)
             self.assertEqual(correlations["correlations"][0]["status"], "matched_unique_candidate")
+
+    def test_installed_wheel_builds_catalog_without_cwd_schemas(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wheelhouse = root / "wheelhouse"
+            wheelhouse.mkdir()
+            env = _clean_env()
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "wheel",
+                    "--no-deps",
+                    "--no-build-isolation",
+                    str(ROOT),
+                    "-w",
+                    str(wheelhouse),
+                ],
+                cwd=ROOT,
+                env=env,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            wheels = sorted(wheelhouse.glob("asgard_api_auditor-*.whl"))
+            self.assertEqual(len(wheels), 1)
+
+            virtualenv = root / "venv"
+            venv.EnvBuilder(with_pip=True).create(virtualenv)
+            python = _python_executable(virtualenv)
+            subprocess.run(
+                [str(python), "-m", "pip", "install", str(wheels[0])],
+                cwd=root,
+                env=env,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            findings = root / "findings.json"
+            _write_findings(
+                findings,
+                repository_id="provider",
+                commit="a" * 40,
+                endpoints=[_endpoint("exposed", "GET", "/health")],
+            )
+            run_dir = root / "run-without-schemas"
+            run_dir.mkdir()
+            self.assertFalse((run_dir / "schemas").exists())
+            catalog = root / "api-catalog.json"
+            subprocess.run(
+                [
+                    str(python),
+                    "-m",
+                    "asgard_api_auditor.cli",
+                    "catalog-api",
+                    "--findings",
+                    str(findings),
+                    "--output",
+                    str(catalog),
+                ],
+                cwd=run_dir,
+                env=env,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            payload = json.loads(catalog.read_text(encoding="utf-8"))
+            self.assertEqual(payload["coverage"]["exposed_endpoints"], 1)
 
 
 if __name__ == "__main__":

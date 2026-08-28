@@ -2,7 +2,13 @@ import json
 import unittest
 from pathlib import Path
 
-from asgard_api_auditor.constants import FINDINGS_SCHEMA_VERSION, OPENAPI_VERSION
+from asgard_api_auditor.constants import (
+    API_CATALOG_SCHEMA_VERSION,
+    API_COMPATIBILITY_SCHEMA_VERSION,
+    CONSUMER_COMPATIBILITY_SCHEMA_VERSION,
+    FINDINGS_SCHEMA_VERSION,
+    OPENAPI_VERSION,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,8 +22,25 @@ class ContractTests(unittest.TestCase):
         schema = json.loads((ROOT / "schemas/findings.schema.json").read_text(encoding="utf-8"))
         response = schema["$defs"]["response"]["properties"]
         self.assertIn("fields_used_by_consumer", response)
+        self.assertIn("additional_fields_backward_compatible", response)
+        self.assertIn("tolerates_additional_fields", response)
+        self.assertIn("tolerates_additional_statuses", response)
+        self.assertIn("status_code_compatibility", response)
+        request = schema["$defs"]["request"]["properties"]
+        self.assertIn("accepts_additional_parameters", request)
+        self.assertIn("rejects_additional_parameters", request)
         endpoint_required = schema["$defs"]["endpoint"]["required"]
         self.assertIn("endpoint_id", endpoint_required)
+        endpoint = schema["$defs"]["endpoint"]["properties"]
+        self.assertIn("credential_format", endpoint)
+        self.assertIn("scheme", endpoint)
+        self.assertIn("header_semantics", endpoint)
+        behavior = schema["$defs"]["semanticBehavior"]["properties"]
+        self.assertIn("semantic_partial_materiality", behavior)
+        semantic_fact = schema["$defs"]["semanticFact"]["properties"]
+        self.assertIn("compatibility", semantic_fact)
+        evidence_kinds = schema["$defs"]["evidence"]["properties"]["kind"]["enum"]
+        self.assertIn("integration", evidence_kinds)
 
     def test_findings_schema_has_coverage_gate_fields(self) -> None:
         schema = json.loads((ROOT / "schemas/findings.schema.json").read_text(encoding="utf-8"))
@@ -34,6 +57,17 @@ class ContractTests(unittest.TestCase):
     def test_openapi_template_uses_approved_version(self) -> None:
         text = (ROOT / "templates/openapi.yaml").read_text(encoding="utf-8")
         self.assertIn(f"openapi: {OPENAPI_VERSION}", text)
+
+    def test_v08_schemas_are_valid_json_and_versioned(self) -> None:
+        expectations = {
+            "api-catalog.schema.json": API_CATALOG_SCHEMA_VERSION,
+            "api-compatibility.schema.json": API_COMPATIBILITY_SCHEMA_VERSION,
+            "consumer-compatibility.schema.json": CONSUMER_COMPATIBILITY_SCHEMA_VERSION,
+        }
+        for name, version in expectations.items():
+            with self.subTest(schema=name):
+                schema = json.loads((ROOT / "schemas" / name).read_text(encoding="utf-8"))
+                self.assertEqual(schema["properties"]["schema_version"]["const"], version)
 
 
 if __name__ == "__main__":

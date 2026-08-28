@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "asgard-api-auditor"
-version = "0.7.2"
+version = "0.8.0"
 description = "Auditor de APIs para repositorios ASGARD"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -38,6 +38,7 @@ _ALLOWED_FINDINGS_EVIDENCE = {
     "existing_spec",
     "webhook",
     "generated_sdk",
+    "integration",
     "unknown",
 }
 
@@ -101,6 +102,9 @@ def _endpoint_payload(endpoint: EndpointFinding) -> dict[str, object]:
         "handler": endpoint.handler,
         "authentication": endpoint.authentication,
         "authorization": endpoint.authorization,
+        "credential_format": endpoint.credential_format,
+        "scheme": endpoint.scheme,
+        "header_semantics": endpoint.header_semantics,
     }
     for key, value in optional.items():
         if value is not None:

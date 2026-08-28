@@ -9,7 +9,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
+from .api_compatibility import ApiCompatibilityError, write_api_compatibility
+from .catalog import CatalogError, write_api_catalog
 from .correlation import CorrelationError, correlate_findings
+from .consumer_compatibility import ConsumerCompatibilityError, write_consumer_compatibility
 from .discovery import discover_endpoints, discovery_to_dict
 from .generation import generate_audit
 from .inventory import InventoryError, inventory_repository, inventory_to_dict
@@ -87,6 +90,83 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="Output directory for correlations.json and api-relations.md",
+    )
+
+    catalog = subparsers.add_parser(
+        "catalog-api",
+        help="Build a canonical API catalog from a findings.json artifact.",
+    )
+    catalog.add_argument("--findings", type=Path, required=True, help="Path to findings.json")
+    catalog.add_argument("--output", type=Path, required=True, help="Output api-catalog.json path")
+    catalog.add_argument(
+        "--stable-namespace",
+        help="Explicit stable namespace for endpoint identity when required by the caller.",
+    )
+    catalog.add_argument("--include-endpoint", action="append", help="Endpoint selector to include")
+    catalog.add_argument("--exclude-endpoint", action="append", help="Endpoint selector to exclude")
+
+    compare = subparsers.add_parser(
+        "compare-api",
+        help="Compare reference and candidate API catalogs.",
+    )
+    compare.add_argument("reference_catalog", type=Path, help="Reference api-catalog.json")
+    compare.add_argument("candidate_catalog", type=Path, help="Candidate api-catalog.json")
+    compare.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Output directory for api-compatibility.json and api-compatibility.md",
+    )
+    compare.add_argument(
+        "--gate-mode",
+        choices=("report", "fail_on_breaking", "fail_closed"),
+        default="report",
+        help="Compatibility gate semantics",
+    )
+    compare.add_argument("--include-endpoint", action="append", help="Endpoint selector to include")
+    compare.add_argument("--exclude-endpoint", action="append", help="Endpoint selector to exclude")
+    compare.add_argument(
+        "--enforce-security-policy",
+        action="store_true",
+        help="Treat security policy drift as gate-breaking when applicable.",
+    )
+
+    provider_consumer = subparsers.add_parser(
+        "check-consumer-compatibility",
+        help="Check consumed API dependencies against provider catalogs.",
+    )
+    provider_consumer.add_argument(
+        "--consumer-catalog",
+        action="append",
+        type=Path,
+        required=True,
+        help="Consumer api-catalog.json; may be repeated",
+    )
+    provider_consumer.add_argument(
+        "--provider-catalog",
+        action="append",
+        type=Path,
+        required=True,
+        help="Provider api-catalog.json; may be repeated",
+    )
+    provider_consumer.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Output directory for consumer-compatibility.json and consumer-compatibility.md",
+    )
+    provider_consumer.add_argument(
+        "--gate-mode",
+        choices=("report", "fail_on_breaking", "fail_closed"),
+        default="fail_closed",
+        help="Provider/consumer compatibility gate semantics",
+    )
+    provider_consumer.add_argument("--include-endpoint", action="append", help="Endpoint selector to include")
+    provider_consumer.add_argument("--exclude-endpoint", action="append", help="Endpoint selector to exclude")
+    provider_consumer.add_argument(
+        "--enforce-security-policy",
+        action="store_true",
+        help="Treat security policy drift as gate-breaking when applicable.",
     )
     return parser
 
@@ -212,9 +292,82 @@ def _correlate_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _catalog_command(args: argparse.Namespace) -> int:
+    try:
+        destination, payload = write_api_catalog(
+            args.findings,
+            args.output,
+            namespace=args.stable_namespace,
+            include_endpoints=tuple(args.include_endpoint or ()),
+            exclude_endpoints=tuple(args.exclude_endpoint or ()),
+        )
+    except CatalogError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    coverage = payload["coverage"]
+    assert isinstance(coverage, dict)
+    print(f"API catalog written to {destination}")
+    print(
+        "Catalog endpoints: "
+        f"{coverage['exposed_endpoints']} exposed / {coverage['consumed_endpoints']} consumed"
+    )
+    return 0
+
+
+def _compare_api_command(args: argparse.Namespace) -> int:
+    try:
+        destination, payload = write_api_compatibility(
+            args.reference_catalog,
+            args.candidate_catalog,
+            args.output,
+            gate_mode=args.gate_mode,
+            include_endpoints=tuple(args.include_endpoint or ()),
+            exclude_endpoints=tuple(args.exclude_endpoint or ()),
+            enforce_security_policy=args.enforce_security_policy,
+        )
+    except ApiCompatibilityError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    gate = payload["gate"]
+    assert isinstance(gate, dict)
+    print(f"API compatibility artifacts written to {destination}")
+    print(f"Compatibility gate: {gate['mode']} -> {gate['status']}")
+    return 0 if gate["status"] == "passed" else 3
+
+
+def _consumer_compatibility_command(args: argparse.Namespace) -> int:
+    try:
+        destination, payload = write_consumer_compatibility(
+            args.consumer_catalog,
+            args.provider_catalog,
+            args.output,
+            gate_mode=args.gate_mode,
+            include_endpoints=tuple(args.include_endpoint or ()),
+            exclude_endpoints=tuple(args.exclude_endpoint or ()),
+            enforce_security_policy=args.enforce_security_policy,
+        )
+    except ConsumerCompatibilityError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    gate = payload["gate"]
+    assert isinstance(gate, dict)
+    print(f"Consumer compatibility artifacts written to {destination}")
+    print(f"Consumer compatibility gate: {gate['mode']} -> {gate['status']}")
+    return 0 if gate["status"] == "passed" else 3
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     actual = list(sys.argv[1:] if argv is None else argv)
-    if actual and actual[0] not in {"inventory", "discover", "audit", "correlate"} and not actual[0].startswith("-"):
+    commands = {
+        "inventory",
+        "discover",
+        "audit",
+        "correlate",
+        "catalog-api",
+        "compare-api",
+        "check-consumer-compatibility",
+    }
+    if actual and actual[0] not in commands and not actual[0].startswith("-"):
         actual.insert(0, "audit")
     parser = build_parser()
     args = parser.parse_args(actual)
@@ -226,6 +379,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _audit_command(args)
     if args.command == "correlate":
         return _correlate_command(args)
+    if args.command == "catalog-api":
+        return _catalog_command(args)
+    if args.command == "compare-api":
+        return _compare_api_command(args)
+    if args.command == "check-consumer-compatibility":
+        return _consumer_compatibility_command(args)
     parser.print_help()
     return 2
 

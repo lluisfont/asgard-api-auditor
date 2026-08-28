@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 
 from asgard_api_auditor.artifacts import validate_audit_set
+from asgard_api_auditor.api_compatibility import build_api_compatibility
+from asgard_api_auditor.catalog import build_api_catalog
 from asgard_api_auditor.cli import main
 from asgard_api_auditor.generation import generate_audit
 from asgard_api_auditor.models import AuditTarget
@@ -400,6 +402,78 @@ class GenerationTests(unittest.TestCase):
             self.assertNotIn("scheme: bearer", openapi)
             self.assertEqual(coverage["security_enrichment_applicable"], 1)
             self.assertEqual(coverage["security_enriched"], 1)
+
+    def test_source_to_findings_catalog_compatibility_preserves_supported_facts_only(self) -> None:
+        def write_route(repo: Path, *, side_effect: bool) -> None:
+            effect = "    file_put_contents('/tmp/audit.txt', 'x');\n" if side_effect else ""
+            _replace_routes(
+                repo,
+                "<?php\n"
+                "$verifyToken = function($request, $handler) {\n"
+                "    $token = $request->getHeaderLine('Authorization');\n"
+                "    JWT::decode($token, new Key(jwt_key, 'HS256'));\n"
+                "    return $handler->handle($request);\n"
+                "};\n"
+                "$app->get('/private/{id}', function($request, $response, $args) {\n"
+                "    $db->query(\"SELECT * FROM t_items\");\n"
+                f"{effect}"
+                "    $payload = ['id' => '1'];\n"
+                "    $response->getBody()->write(json_encode($payload));\n"
+                "    return $response->withHeader('Content-Type', 'application/json');\n"
+                "})->add($verifyToken);\n",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference_root = root / "reference-root"
+            candidate_root = root / "candidate-root"
+            reference_root.mkdir()
+            candidate_root.mkdir()
+            reference_repo = _repo(reference_root)
+            candidate_repo = _repo(candidate_root)
+            write_route(reference_repo, side_effect=False)
+            write_route(candidate_repo, side_effect=True)
+            reference_output = root / "reference-audit"
+            candidate_output = root / "candidate-audit"
+            generate_audit(AuditTarget(reference_repo, output=reference_output, repository_id="reference"))
+            generate_audit(AuditTarget(candidate_repo, output=candidate_output, repository_id="candidate"))
+
+            reference_findings = json.loads((reference_output / "findings.json").read_text(encoding="utf-8"))
+            candidate_findings = json.loads((candidate_output / "findings.json").read_text(encoding="utf-8"))
+            reference_endpoint = next(
+                item for item in reference_findings["endpoints"] if item["direction"] == "exposed" and item["path"] == "/private/{id}"
+            )
+            candidate_endpoint = next(
+                item for item in candidate_findings["endpoints"] if item["direction"] == "exposed" and item["path"] == "/private/{id}"
+            )
+
+            self.assertEqual(reference_endpoint["authentication"], "Authorization header raw JWT HS256")
+            self.assertEqual(reference_endpoint["credential_format"], "raw_jwt")
+            self.assertEqual(reference_endpoint["header_semantics"], "raw_authorization_header")
+            self.assertNotIn("scheme", reference_endpoint)
+            self.assertIsNone(reference_endpoint["request"]["accepts_additional_parameters"])
+            self.assertIsNone(reference_endpoint["response"]["tolerates_additional_fields"])
+            self.assertIsNone(reference_endpoint["response"]["tolerates_additional_statuses"])
+            self.assertNotIn("compatibility", candidate_endpoint["behavior"]["side_effects"][0])
+
+            reference_catalog_path = root / "reference-catalog.json"
+            candidate_catalog_path = root / "candidate-catalog.json"
+            reference_catalog = build_api_catalog(reference_output / "findings.json")
+            candidate_catalog = build_api_catalog(candidate_output / "findings.json")
+            reference_catalog_path.write_text(json.dumps(reference_catalog), encoding="utf-8")
+            candidate_catalog_path.write_text(json.dumps(candidate_catalog), encoding="utf-8")
+
+            catalog_auth = next(
+                item for item in reference_catalog["endpoints"] if item["direction"] == "exposed" and item["normalized_path"] == "/private/{id}"
+            )["authentication"]
+            self.assertEqual(catalog_auth["credential_format"], "raw_jwt")
+            self.assertIsNone(catalog_auth["scheme"])
+            self.assertEqual(catalog_auth["header_semantics"], "raw_authorization_header")
+
+            compatibility = build_api_compatibility(reference_catalog_path, candidate_catalog_path)
+            record = next(item for item in compatibility["records"] if item["path_shape"] == "/private/{}")
+            self.assertEqual(record["classification"], "unknown")
+            self.assertIn("external_side_effect_added_unknown", [item["code"] for item in record["findings"]])
 
     def test_unknown_middleware_creates_security_unresolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
