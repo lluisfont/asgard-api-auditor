@@ -376,8 +376,8 @@ class ConsumerCompatibilityTests(unittest.TestCase):
             provider = root / "provider.json"
             consumer_endpoint = _endpoint("consumed", "GET", "/items", response_fields={"id": "string"}, response_used=["id"], semantic_status="partial")
             provider_endpoint = _endpoint("exposed", "GET", "/items", response_fields={"id": "string"}, semantic_status="partial")
-            consumer_endpoint["behavior"]["semantic_partial_scope"] = "internal"
-            provider_endpoint["behavior"]["semantic_partial_scope"] = "internal"
+            consumer_endpoint["behavior"]["semantic_partial_materiality"] = "internal"
+            provider_endpoint["behavior"]["semantic_partial_materiality"] = "internal"
             _catalog(consumer, [consumer_endpoint], repo="consumer")
             _catalog(provider, [provider_endpoint], repo="provider")
 
@@ -390,14 +390,14 @@ class ConsumerCompatibilityTests(unittest.TestCase):
             provider = root / "provider.json"
             consumer_endpoint = _endpoint("consumed", "GET", "/items", response_fields={"id": "string"}, response_used=["id"], semantic_status="partial")
             provider_endpoint = _endpoint("exposed", "GET", "/items", response_fields={"id": "string"}, semantic_status="partial")
-            consumer_endpoint["behavior"]["semantic_partial_scope"] = "external"
-            provider_endpoint["behavior"]["semantic_partial_scope"] = "external"
+            consumer_endpoint["behavior"]["semantic_partial_materiality"] = "external"
+            provider_endpoint["behavior"]["semantic_partial_materiality"] = "external"
             _catalog(consumer, [consumer_endpoint], repo="consumer")
             _catalog(provider, [provider_endpoint], repo="provider")
             self.assertEqual(build_consumer_compatibility([consumer], [provider])["records"][0]["status"], "unknown")
 
-            consumer_endpoint["behavior"].pop("semantic_partial_scope")
-            provider_endpoint["behavior"].pop("semantic_partial_scope")
+            consumer_endpoint["behavior"].pop("semantic_partial_materiality")
+            provider_endpoint["behavior"].pop("semantic_partial_materiality")
             _catalog(consumer, [consumer_endpoint], repo="consumer")
             _catalog(provider, [provider_endpoint], repo="provider")
             self.assertEqual(build_consumer_compatibility([consumer], [provider])["records"][0]["status"], "unknown")

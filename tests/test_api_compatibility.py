@@ -465,8 +465,8 @@ class ApiCompatibilityTests(unittest.TestCase):
             root = Path(tmp)
             reference = root / "reference.json"
             candidate = root / "candidate.json"
-            reference_behavior = {"summary": "fixture", "data_access": [{"table": "a"}], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": ["A"], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id"}}
-            candidate_behavior = {"summary": "fixture", "data_access": [{"table": "b"}], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": ["B"], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id"}}
+            reference_behavior = {"summary": "fixture", "data_access": [{"table": "a"}], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [{"id": "call-a", "name": "A", "evidence": []}], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id"}}
+            candidate_behavior = {"summary": "fixture", "data_access": [{"table": "b"}], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [{"id": "call-b", "name": "B", "evidence": []}], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id"}}
             _catalog(reference, [_endpoint("GET", "/items", behavior=reference_behavior)], repo="reference")
             _catalog(candidate, [_endpoint("GET", "/items", behavior=candidate_behavior)], repo="candidate")
 
@@ -510,7 +510,7 @@ class ApiCompatibilityTests(unittest.TestCase):
             self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "additive")
 
             breaking_effect = dict(base)
-            breaking_effect["side_effects"] = [{"type": "webhook", "target": "external", "compatibility": "breaking"}]
+            breaking_effect["side_effects"] = [{"type": "webhook", "target": "external", "compatibility": "incompatible"}]
             _catalog(candidate, [_endpoint("POST", "/items", behavior=breaking_effect)], repo="candidate")
             self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "breaking")
 
@@ -519,7 +519,7 @@ class ApiCompatibilityTests(unittest.TestCase):
             root = Path(tmp)
             reference = root / "reference.json"
             candidate = root / "candidate.json"
-            behavior = {"summary": "fixture", "semantic_partial_scope": "internal", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id"}}
+            behavior = {"summary": "fixture", "semantic_partial_materiality": "internal", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id"}}
             _catalog(reference, [_endpoint("GET", "/items", behavior=behavior, semantic_status="partial")], repo="reference")
             _catalog(candidate, [_endpoint("GET", "/items", behavior=behavior, semantic_status="partial")], repo="candidate")
             self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "same")
@@ -529,7 +529,7 @@ class ApiCompatibilityTests(unittest.TestCase):
             root = Path(tmp)
             reference = root / "reference.json"
             candidate = root / "candidate.json"
-            external = {"summary": "fixture", "semantic_partial_scope": "external", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {}}
+            external = {"summary": "fixture", "semantic_partial_materiality": "external", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {}}
             unknown = {"summary": "fixture", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {}}
             _catalog(reference, [_endpoint("GET", "/items", behavior=external, semantic_status="partial")], repo="reference")
             _catalog(candidate, [_endpoint("GET", "/items", behavior=external, semantic_status="partial")], repo="candidate")

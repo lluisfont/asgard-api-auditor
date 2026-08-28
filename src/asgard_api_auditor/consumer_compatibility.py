@@ -177,10 +177,10 @@ def _semantic_partial_materiality(endpoint: dict[str, object]) -> str:
     if endpoint.get("semantic_status") != "partial":
         return "not_partial"
     behavior = _as_dict(endpoint.get("behavior"))
-    scope = behavior.get("semantic_partial_scope") or behavior.get("semantic_uncertainty_scope")
-    if scope in {"internal", "internal_only"}:
+    scope = behavior.get("semantic_partial_materiality")
+    if scope == "internal":
         return "internal"
-    if scope in {"external", "external_contract", "response", "side_effect"}:
+    if scope == "external":
         return "external"
     return "unknown"
 

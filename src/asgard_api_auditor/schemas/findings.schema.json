@@ -54,7 +54,9 @@
         "parameters": {"type": "array", "items": {"$ref": "#/$defs/parameter"}},
         "content_type": {"type": ["string", "null"]},
         "body_schema": {"type": ["object", "null"]},
-        "fields": {"type": "array", "items": {"type": "string"}}
+        "fields": {"type": "array", "items": {"type": "string"}},
+        "accepts_additional_parameters": {"type": ["boolean", "null"]},
+        "rejects_additional_parameters": {"type": ["boolean", "null"]}
       },
       "additionalProperties": false
     },
@@ -66,7 +68,14 @@
         "content_type": {"type": ["string", "null"]},
         "schema": {"type": ["object", "null"]},
         "fields": {"type": "array", "items": {"type": "string"}},
-        "fields_used_by_consumer": {"type": "array", "items": {"type": "string"}}
+        "fields_used_by_consumer": {"type": "array", "items": {"type": "string"}},
+        "additional_fields_backward_compatible": {"type": ["boolean", "null"]},
+        "tolerates_additional_fields": {"type": ["boolean", "null"]},
+        "tolerates_additional_statuses": {"type": ["boolean", "null"]},
+        "status_code_compatibility": {
+          "type": ["object", "null"],
+          "additionalProperties": {"enum": ["compatible", "breaking", "unknown"]}
+        }
       },
       "additionalProperties": false
     },
@@ -87,6 +96,9 @@
         "handler": {"type": ["string", "null"]},
         "authentication": {"type": ["string", "null"]},
         "authorization": {"type": ["string", "null"]},
+        "credential_format": {"type": ["string", "null"]},
+        "scheme": {"type": ["string", "null"]},
+        "header_semantics": {"type": ["string", "null"]},
         "request": {"$ref": "#/$defs/request"},
         "response": {"$ref": "#/$defs/response"},
         "behavior": {"$ref": "#/$defs/semanticBehavior"},
@@ -171,6 +183,7 @@
         "resource": {"type": ["string", "null"]},
         "target": {"type": ["string", "null"]},
         "integration_type": {"type": ["string", "null"]},
+        "compatibility": {"enum": ["compatible", "incompatible", "unknown"]},
         "source_fields": {"type": "array", "items": {"type": "string"}},
         "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
       },
@@ -237,6 +250,7 @@
         "confidence": {"enum": ["confirmed", "probable", "unverified"]},
         "summary": {"type": "string", "minLength": 1},
         "source_module": {"type": ["string", "null"]},
+        "semantic_partial_materiality": {"enum": ["internal", "external", "unknown"]},
         "tags": {"type": "array", "items": {"type": "string"}},
         "request_fields": {"type": "array", "items": {"$ref": "#/$defs/semanticRequestField"}},
         "data_access": {"type": "array", "items": {"$ref": "#/$defs/semanticFact"}},

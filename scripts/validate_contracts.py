@@ -66,6 +66,26 @@ def validate_findings_schema() -> None:
 
     response_props = schema["$defs"]["response"]["properties"]
     require("fields_used_by_consumer" in response_props, "consumer response fields are missing")
+    for key in (
+        "additional_fields_backward_compatible",
+        "tolerates_additional_fields",
+        "tolerates_additional_statuses",
+        "status_code_compatibility",
+    ):
+        require(key in response_props, f"findings response must represent {key}")
+    request_props = schema["$defs"]["request"]["properties"]
+    for key in ("accepts_additional_parameters", "rejects_additional_parameters"):
+        require(key in request_props, f"findings request must represent {key}")
+    endpoint_props = schema["$defs"]["endpoint"]["properties"]
+    for key in ("credential_format", "scheme", "header_semantics"):
+        require(key in endpoint_props, f"findings endpoint must represent {key}")
+    semantic_props = schema["$defs"]["semanticBehavior"]["properties"]
+    require(
+        "semantic_partial_materiality" in semantic_props,
+        "findings semantic behavior must represent partial materiality",
+    )
+    semantic_fact_props = schema["$defs"]["semanticFact"]["properties"]
+    require("compatibility" in semantic_fact_props, "semantic facts must represent compatibility evidence")
 
     coverage_required = set(schema["$defs"]["coverage"]["required"])
     require("inventory_complete" in coverage_required, "coverage must require inventory_complete")

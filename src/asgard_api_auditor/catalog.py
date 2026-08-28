@@ -144,6 +144,14 @@ def _string_list(value: object) -> list[str]:
     return sorted({item for item in _as_list(value) if isinstance(item, str)})
 
 
+def _bool_or_none(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _dict_or_none(value: object) -> dict[str, object] | None:
+    return value if isinstance(value, dict) else None
+
+
 def _field_names_from_schema(schema: object) -> list[str]:
     if not isinstance(schema, dict):
         return []
@@ -206,8 +214,8 @@ def _request_contract(endpoint: dict[str, object]) -> dict[str, object]:
         "required_fields": required,
         "optional_fields": optional,
         "unknown_requiredness_fields": sorted(set(fields) - set(required) - set(optional)),
-        "accepts_additional_parameters": request.get("accepts_additional_parameters"),
-        "rejects_additional_parameters": request.get("rejects_additional_parameters"),
+        "accepts_additional_parameters": _bool_or_none(request.get("accepts_additional_parameters")),
+        "rejects_additional_parameters": _bool_or_none(request.get("rejects_additional_parameters")),
         "evidence": [],
         "unresolved": [],
     }
@@ -242,11 +250,11 @@ def _response_contract(endpoint: dict[str, object]) -> dict[str, object]:
             - set(_required_from_schema(response.get("schema")))
             - set(_optional_from_schema(response.get("schema")))
         ),
-        "additional_fields_backward_compatible": response.get("additional_fields_backward_compatible"),
+        "additional_fields_backward_compatible": _bool_or_none(response.get("additional_fields_backward_compatible")),
         "fields_used_by_consumer": used,
-        "tolerates_additional_fields": response.get("tolerates_additional_fields"),
-        "tolerates_additional_statuses": response.get("tolerates_additional_statuses"),
-        "status_code_compatibility": response.get("status_code_compatibility"),
+        "tolerates_additional_fields": _bool_or_none(response.get("tolerates_additional_fields")),
+        "tolerates_additional_statuses": _bool_or_none(response.get("tolerates_additional_statuses")),
+        "status_code_compatibility": _dict_or_none(response.get("status_code_compatibility")),
         "evidence": [],
         "unresolved": [],
     }
@@ -307,7 +315,14 @@ def _semantic_behavior(endpoint: dict[str, object]) -> dict[str, object]:
     behavior = endpoint.get("behavior")
     if not isinstance(behavior, dict):
         return {
+            "schema_version": None,
+            "semantic_status": None,
+            "confidence": None,
             "summary": None,
+            "source_module": None,
+            "semantic_partial_materiality": None,
+            "tags": [],
+            "request_fields": [],
             "data_access": [],
             "auth_context": {
                 "consumed_jwt_claims": [],
@@ -318,9 +333,19 @@ def _semantic_behavior(endpoint: dict[str, object]) -> dict[str, object]:
             "conditions": [],
             "side_effects": [],
             "response_semantics": {},
+            "unresolved": [],
+            "evidence": [],
         }
+    materiality = behavior.get("semantic_partial_materiality")
     return {
+        "schema_version": behavior.get("schema_version"),
+        "semantic_status": behavior.get("semantic_status"),
+        "confidence": behavior.get("confidence"),
         "summary": behavior.get("summary"),
+        "source_module": behavior.get("source_module"),
+        "semantic_partial_materiality": materiality if materiality in {"internal", "external", "unknown"} else None,
+        "tags": _as_list(behavior.get("tags")),
+        "request_fields": _as_list(behavior.get("request_fields")),
         "data_access": _as_list(behavior.get("data_access")),
         "auth_context": behavior.get(
             "auth_context",
@@ -331,6 +356,8 @@ def _semantic_behavior(endpoint: dict[str, object]) -> dict[str, object]:
         "conditions": _as_list(behavior.get("conditions")),
         "side_effects": _as_list(behavior.get("side_effects")),
         "response_semantics": behavior.get("response_semantics") or {},
+        "unresolved": _as_list(behavior.get("unresolved")),
+        "evidence": _as_list(behavior.get("evidence")),
     }
 
 

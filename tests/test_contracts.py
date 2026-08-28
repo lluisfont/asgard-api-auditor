@@ -22,8 +22,23 @@ class ContractTests(unittest.TestCase):
         schema = json.loads((ROOT / "schemas/findings.schema.json").read_text(encoding="utf-8"))
         response = schema["$defs"]["response"]["properties"]
         self.assertIn("fields_used_by_consumer", response)
+        self.assertIn("additional_fields_backward_compatible", response)
+        self.assertIn("tolerates_additional_fields", response)
+        self.assertIn("tolerates_additional_statuses", response)
+        self.assertIn("status_code_compatibility", response)
+        request = schema["$defs"]["request"]["properties"]
+        self.assertIn("accepts_additional_parameters", request)
+        self.assertIn("rejects_additional_parameters", request)
         endpoint_required = schema["$defs"]["endpoint"]["required"]
         self.assertIn("endpoint_id", endpoint_required)
+        endpoint = schema["$defs"]["endpoint"]["properties"]
+        self.assertIn("credential_format", endpoint)
+        self.assertIn("scheme", endpoint)
+        self.assertIn("header_semantics", endpoint)
+        behavior = schema["$defs"]["semanticBehavior"]["properties"]
+        self.assertIn("semantic_partial_materiality", behavior)
+        semantic_fact = schema["$defs"]["semanticFact"]["properties"]
+        self.assertIn("compatibility", semantic_fact)
         evidence_kinds = schema["$defs"]["evidence"]["properties"]["kind"]["enum"]
         self.assertIn("integration", evidence_kinds)
 
