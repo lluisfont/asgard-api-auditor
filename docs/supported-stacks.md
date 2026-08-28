@@ -19,17 +19,17 @@ A detected but unsupported or unresolved integration surface is never silently i
 
 | Stack / pattern | Inventory | Exposed discovery | Consumed discovery | Contract enrichment | Semantic enrichment | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Slim PHP | Yes | Yes | — | Yes | Yes | Deepest current provider-side support. Literal routes and supported request/response/security patterns are reconstructed conservatively. |
-| Laravel routes | Yes | Yes | — | Limited | Limited | Route discovery is supported for demonstrated literal route patterns. Unsupported/dynamic patterns remain unresolved. |
-| Angular `HttpClient` | Yes | — | Yes | Limited to source-proven discovery facts | — | Consumer-side HTTP discovery. |
-| Axios | Yes | — | Yes | Limited to source-proven discovery facts | — | Consumer-side HTTP discovery. |
-| Fetch | Yes | — | Yes | Limited to source-proven discovery facts | — | Consumer-side HTTP discovery. |
-| Guzzle | Yes | — | Yes | Limited to source-proven discovery facts | — | Consumer-side HTTP discovery. |
-| Laravel HTTP facade | Yes | — | Yes | Limited to source-proven discovery facts | — | Consumer-side HTTP discovery. |
-| PHP cURL | Yes | — | Yes | Limited to source-proven discovery facts | Partial where semantics are demonstrated | Supports direct calls and deterministic local wrappers. Dynamic resolution remains unresolved. |
-| Dio | Yes | — | Yes | Limited to source-proven discovery facts | — | Consumer-side Dart/Flutter discovery with fail-closed receiver resolution. |
-| Dart `http` | Yes | — | Yes | Limited to source-proven discovery facts | — | Consumer-side discovery for supported `Uri` patterns. |
-| PHP `SoapClient` / SOAP | Yes | — | — | WSDL-backed where available | Partial | Tracked as a separate integration surface, never converted into REST/OpenAPI. Local versioned WSDL snapshots can be supplied explicitly. |
+| Slim PHP | Yes | Yes | — | Yes, for supported deterministic patterns | Yes, for supported deterministic patterns | Deepest current provider-side support. |
+| Laravel routes | Yes | Yes | — | No general enrichment demonstrated | No general enrichment demonstrated | Literal route discovery is supported; dynamic/unsupported route patterns remain unresolved. |
+| Angular `HttpClient` | Yes | — | Yes | No general consumer contract enrichment demonstrated | — | Consumer-side HTTP discovery. |
+| Axios | Yes | — | Yes | No general consumer contract enrichment demonstrated | — | Consumer-side HTTP discovery. |
+| Fetch | Yes | — | Yes | No general consumer contract enrichment demonstrated | — | Consumer-side HTTP discovery. |
+| Guzzle | Yes | — | Yes | No general consumer contract enrichment demonstrated | — | Consumer-side HTTP discovery. |
+| Laravel HTTP facade | Yes | — | Yes | No general consumer contract enrichment demonstrated | — | Consumer-side HTTP discovery. |
+| PHP cURL | Yes | — | Yes | No general consumer contract enrichment demonstrated | — | Supports direct calls and deterministic local wrappers; dynamic resolution remains unresolved. |
+| Dio | Yes | — | Yes | No general consumer contract enrichment demonstrated | — | Dart/Flutter consumer discovery with fail-closed receiver resolution. |
+| Dart `http` | Yes | — | Yes | No general consumer contract enrichment demonstrated | — | Consumer-side discovery for supported URI patterns. |
+| PHP `SoapClient` / SOAP | Yes | Separate integration surface | Separate integration surface | WSDL-backed operation validation when an explicit local versioned snapshot is available | No general semantic enrichment demonstrated | Never converted into REST/OpenAPI. |
 
 `—` means the capability is not currently the responsibility of that detector or is not demonstrated as a general capability.
 
