@@ -206,6 +206,8 @@ def _request_contract(endpoint: dict[str, object]) -> dict[str, object]:
         "required_fields": required,
         "optional_fields": optional,
         "unknown_requiredness_fields": sorted(set(fields) - set(required) - set(optional)),
+        "accepts_additional_parameters": request.get("accepts_additional_parameters"),
+        "rejects_additional_parameters": request.get("rejects_additional_parameters"),
         "evidence": [],
         "unresolved": [],
     }
@@ -234,6 +236,13 @@ def _response_contract(endpoint: dict[str, object]) -> dict[str, object]:
         "schema": response.get("schema"),
         "fields": fields,
         "required_fields": _required_from_schema(response.get("schema")),
+        "optional_fields": sorted(set(_optional_from_schema(response.get("schema"))) & set(fields)),
+        "unknown_requiredness_fields": sorted(
+            set(fields)
+            - set(_required_from_schema(response.get("schema")))
+            - set(_optional_from_schema(response.get("schema")))
+        ),
+        "additional_fields_backward_compatible": response.get("additional_fields_backward_compatible"),
         "fields_used_by_consumer": used,
         "tolerates_additional_fields": response.get("tolerates_additional_fields"),
         "tolerates_additional_statuses": response.get("tolerates_additional_statuses"),
@@ -247,7 +256,10 @@ def _auth_contract(endpoint: dict[str, object]) -> dict[str, object]:
     return {
         "authentication": endpoint.get("authentication"),
         "authorization": endpoint.get("authorization"),
+        "credential_format": endpoint.get("credential_format"),
+        "scheme": endpoint.get("scheme"),
         "schemes": [],
+        "header_semantics": endpoint.get("header_semantics"),
         "required": None if endpoint.get("authentication") is None else True,
         "evidence": [],
         "unresolved": [],

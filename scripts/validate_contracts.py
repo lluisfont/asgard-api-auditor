@@ -183,6 +183,9 @@ def validate_v08_schemas() -> None:
     stable_required = set(catalog["$defs"]["stableIdentity"]["required"])
     require("api_id" not in stable_required, "stable identity must not require api_id")
     require("schema_version" not in stable_required, "stable identity must not include schema version")
+    compatibility = json.loads((ROOT / "schemas" / "api-compatibility.schema.json").read_text(encoding="utf-8"))
+    compatibility_summary = set(compatibility["$defs"]["summary"]["required"])
+    require("security_drift" in compatibility_summary, "api compatibility summary must count security drift")
 
     compatibility = json.loads(
         (ROOT / "schemas" / "api-compatibility.schema.json").read_text(encoding="utf-8")

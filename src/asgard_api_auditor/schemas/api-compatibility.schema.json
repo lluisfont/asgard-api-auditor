@@ -22,12 +22,13 @@
     "any": {"type": ["object", "array", "string", "integer", "number", "boolean", "null"]},
     "summary": {
       "type": "object",
-      "required": ["same", "additive", "breaking", "unknown", "required_reference_endpoints", "excluded_reference_endpoints"],
+      "required": ["same", "additive", "breaking", "unknown", "security_drift", "required_reference_endpoints", "excluded_reference_endpoints"],
       "properties": {
         "same": {"type": "integer", "minimum": 0},
         "additive": {"type": "integer", "minimum": 0},
         "breaking": {"type": "integer", "minimum": 0},
         "unknown": {"type": "integer", "minimum": 0},
+        "security_drift": {"type": "integer", "minimum": 0},
         "required_reference_endpoints": {"type": "integer", "minimum": 0},
         "excluded_reference_endpoints": {"type": "integer", "minimum": 0}
       },

@@ -115,6 +115,8 @@
         "unknown_requiredness_fields": {"type": "array", "items": {"type": "string"}},
         "accepts_additional_fields": {"type": ["boolean", "null"]},
         "rejects_additional_fields": {"type": ["boolean", "null"]},
+        "accepts_additional_parameters": {"type": ["boolean", "null"]},
+        "rejects_additional_parameters": {"type": ["boolean", "null"]},
         "evidence": {"type": "array", "items": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}},
         "unresolved": {"type": "array", "items": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}}
       },
@@ -129,6 +131,9 @@
         "schema": {"type": ["object", "null"]},
         "fields": {"type": "array", "items": {"type": "string"}},
         "required_fields": {"type": "array", "items": {"type": "string"}},
+        "optional_fields": {"type": "array", "items": {"type": "string"}},
+        "unknown_requiredness_fields": {"type": "array", "items": {"type": "string"}},
+        "additional_fields_backward_compatible": {"type": ["boolean", "null"]},
         "fields_used_by_consumer": {"type": "array", "items": {"type": "string"}},
         "tolerates_additional_fields": {"type": ["boolean", "null"]},
         "tolerates_additional_statuses": {"type": ["boolean", "null"]},
@@ -144,7 +149,10 @@
       "properties": {
         "authentication": {"type": ["string", "null"]},
         "authorization": {"type": ["string", "null"]},
+        "credential_format": {"type": ["string", "null"]},
+        "scheme": {"type": ["string", "null"]},
         "schemes": {"type": "array", "items": {"type": "string"}},
+        "header_semantics": {"type": ["string", "null"]},
         "required": {"type": ["boolean", "null"]},
         "evidence": {"type": "array", "items": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}},
         "unresolved": {"type": "array", "items": {"type": "object", "additionalProperties": {"$ref": "#/$defs/any"}}}

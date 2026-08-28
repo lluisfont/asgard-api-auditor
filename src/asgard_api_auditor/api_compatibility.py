@@ -106,6 +106,23 @@ def _strings(value: object) -> set[str]:
     return {item for item in _as_list(value) if isinstance(item, str)}
 
 
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _input_trace(snapshot: CatalogSnapshot) -> dict[str, object]:
+    metadata = _as_dict(snapshot.payload.get("metadata"))
+    return {
+        "catalog_id": snapshot.payload.get("catalog_id"),
+        "repository_id": metadata.get("repository_id"),
+        "source_ref": metadata.get("source_ref"),
+        "source_commit": metadata.get("source_commit"),
+        "auditor_version": snapshot.payload.get("auditor_version"),
+        "schema_version": snapshot.payload.get("schema_version"),
+        "sha256": _file_sha256(snapshot.path),
+    }
+
+
 def _canonical_artifact(payload: dict[str, object]) -> object:
     def normalize(value: object, key: str | None = None) -> object:
         if isinstance(value, dict):
@@ -254,12 +271,18 @@ def _compare_request(reference: dict[str, object], candidate: dict[str, object])
     candidate_fields = _strings(candidate_request.get("fields"))
     reference_required = _strings(reference_request.get("required_fields"))
     candidate_required = _strings(candidate_request.get("required_fields"))
+    candidate_optional = _strings(candidate_request.get("optional_fields"))
     removed_required = sorted(reference_required - candidate_fields)
     added_required = sorted(candidate_required - reference_fields)
     for field in removed_required:
         findings.append({"classification": "breaking", "code": "required_request_field_removed", "detail": field})
     for field in added_required:
         findings.append({"classification": "breaking", "code": "required_request_field_added", "detail": field})
+    for field in sorted(candidate_fields - reference_fields - candidate_required):
+        if field in candidate_optional:
+            findings.append({"classification": "additive", "code": "optional_request_field_added", "detail": field})
+        else:
+            findings.append({"classification": "unknown", "code": "request_field_requiredness_unknown", "detail": field})
     for field in sorted(_strings(reference_request.get("unknown_requiredness_fields")) | _strings(candidate_request.get("unknown_requiredness_fields"))):
         findings.append({"classification": "unknown", "code": "request_field_requiredness_unknown", "detail": field})
     for field in sorted(reference_fields & candidate_fields):
@@ -302,17 +325,29 @@ def _compare_response(reference: dict[str, object], candidate: dict[str, object]
             findings.append({"classification": "additive", "code": "response_status_added_compatible", "detail": str(code)})
         else:
             findings.append({"classification": "unknown", "code": "response_status_added_unknown", "detail": str(code)})
-    if candidate_fields - reference_fields:
-        findings.append({
-            "classification": "additive",
-            "code": "response_fields_added",
-            "detail": ",".join(sorted(candidate_fields - reference_fields)),
-        })
+    added_fields = candidate_fields - reference_fields
+    candidate_required = _strings(candidate_response.get("required_fields"))
+    candidate_optional = _strings(candidate_response.get("optional_fields"))
+    if added_fields:
+        optional_added = added_fields & candidate_optional - candidate_required
+        unknown_added = added_fields - optional_added
+        compatible = (
+            reference_response.get("tolerates_additional_fields") is True
+            or candidate_response.get("additional_fields_backward_compatible") is True
+        )
+        if optional_added and compatible:
+            findings.append({
+                "classification": "additive",
+                "code": "response_fields_added_compatible",
+                "detail": ",".join(sorted(optional_added)),
+            })
+        for field in sorted(unknown_added | (optional_added if not compatible else set())):
+            findings.append({"classification": "unknown", "code": "response_field_addition_compatibility_unknown", "detail": field})
     before_type = reference_response.get("content_type")
     after_type = candidate_response.get("content_type")
     if before_type and after_type and before_type != after_type:
         findings.append({"classification": "breaking", "code": "response_content_type_incompatible", "detail": f"{before_type} != {after_type}"})
-    elif (reference_response.get("schema") is not None or candidate_response.get("schema") is not None) and (before_type is None or after_type is None):
+    elif (reference_fields or candidate_fields) and (before_type is None or after_type is None):
         findings.append({"classification": "unknown", "code": "response_content_type_unknown", "detail": "missing response content type evidence"})
     return findings
 
@@ -380,20 +415,44 @@ def _compare_parameters(reference: dict[str, object], candidate: dict[str, objec
 def _material_behavior(endpoint: dict[str, object]) -> dict[str, object]:
     behavior = _as_dict(endpoint.get("behavior"))
     return {
-        "data_access": behavior.get("data_access") or [],
-        "local_calls": behavior.get("local_calls") or [],
         "outbound_integrations": behavior.get("outbound_integrations") or [],
         "side_effects": behavior.get("side_effects") or [],
         "response_semantics": behavior.get("response_semantics") or {},
     }
 
 
+def _internal_behavior(endpoint: dict[str, object]) -> dict[str, object]:
+    behavior = _as_dict(endpoint.get("behavior"))
+    return {
+        "data_access": behavior.get("data_access") or [],
+        "local_calls": behavior.get("local_calls") or [],
+    }
+
+
 def _compare_behavior(reference: dict[str, object], candidate: dict[str, object]) -> list[dict[str, object]]:
+    findings: list[dict[str, object]] = []
     if reference.get("semantic_status") in {"unknown", "partial", "unresolved"} or candidate.get("semantic_status") in {"unknown", "partial", "unresolved"}:
         return [{"classification": "unknown", "code": "semantic_behavior_unknown", "detail": "material behavior is not fully reconstructed"}]
-    if _material_behavior(reference) != _material_behavior(candidate):
-        return [{"classification": "breaking", "code": "semantic_behavior_incompatible", "detail": "demonstrated behavior facts differ"}]
-    return []
+    reference_external = _material_behavior(reference)
+    candidate_external = _material_behavior(candidate)
+    reference_semantics = _as_dict(reference_external.get("response_semantics"))
+    candidate_semantics = _as_dict(candidate_external.get("response_semantics"))
+    for key in sorted(set(reference_semantics) & set(candidate_semantics)):
+        if reference_semantics.get(key) != candidate_semantics.get(key):
+            findings.append({"classification": "breaking", "code": "response_semantics_incompatible", "detail": key})
+    for key in sorted(set(reference_semantics) - set(candidate_semantics)):
+        findings.append({"classification": "unknown", "code": "response_semantics_missing", "detail": key})
+    for key in sorted(set(candidate_semantics) - set(reference_semantics)):
+        findings.append({"classification": "additive", "code": "response_semantics_added", "detail": key})
+    reference_effects = {_canonical_json(item) for item in _as_list(reference_external.get("side_effects"))}
+    candidate_effects = {_canonical_json(item) for item in _as_list(candidate_external.get("side_effects"))}
+    for item in sorted(reference_effects - candidate_effects):
+        findings.append({"classification": "breaking", "code": "external_side_effect_removed", "detail": item})
+    for item in sorted(candidate_effects - reference_effects):
+        findings.append({"classification": "additive", "code": "external_side_effect_added", "detail": item})
+    if _internal_behavior(reference) != _internal_behavior(candidate):
+        findings.append({"classification": "same", "code": "internal_semantic_drift_reported", "detail": "internal data access or local calls differ"})
+    return findings
 
 
 def _auth_strength(auth: dict[str, object]) -> int:
@@ -405,15 +464,46 @@ def _auth_strength(auth: dict[str, object]) -> int:
     return 1
 
 
+def _auth_profile(endpoint: dict[str, object]) -> dict[str, object]:
+    auth = _as_dict(endpoint.get("authentication"))
+    security = _as_dict(endpoint.get("security"))
+    schemes = sorted(_strings(auth.get("schemes")) | _strings(security.get("schemes")))
+    return {
+        "authentication": auth.get("authentication") or security.get("authentication"),
+        "authorization": auth.get("authorization") or security.get("authorization"),
+        "credential_format": auth.get("credential_format") or security.get("credential_format"),
+        "scheme": auth.get("scheme") or security.get("scheme"),
+        "schemes": schemes,
+        "header_semantics": auth.get("header_semantics") or security.get("header_semantics"),
+    }
+
+
+def _auth_demonstrated(profile: dict[str, object]) -> bool:
+    return any(value for value in profile.values())
+
+
 def _compare_auth(reference: dict[str, object], candidate: dict[str, object], *, enforce_security_policy: bool) -> list[dict[str, object]]:
     findings: list[dict[str, object]] = []
-    before = _auth_strength(_as_dict(reference.get("authentication")))
-    after = _auth_strength(_as_dict(candidate.get("authentication")))
+    reference_auth = _as_dict(reference.get("authentication"))
+    candidate_auth = _as_dict(candidate.get("authentication"))
+    before = _auth_strength(reference_auth)
+    after = _auth_strength(candidate_auth)
     if after > before:
         findings.append({"classification": "breaking", "code": "authentication_stricter", "detail": "candidate requires stronger authentication"})
     elif after < before:
         classification = "breaking" if enforce_security_policy else "same"
         findings.append({"classification": classification, "code": "security_policy_drift_weaker_authentication", "detail": "candidate is less strict"})
+    if before > 0 or after > 0:
+        reference_profile = _auth_profile(reference)
+        candidate_profile = _auth_profile(candidate)
+        if not _auth_demonstrated(reference_profile) or not _auth_demonstrated(candidate_profile):
+            findings.append({"classification": "unknown", "code": "auth_mechanism_compatibility_unknown", "detail": "authentication mechanism is not fully demonstrated"})
+        for key, reference_value in reference_profile.items():
+            candidate_value = candidate_profile.get(key)
+            if not reference_value or not candidate_value:
+                continue
+            if reference_value != candidate_value:
+                findings.append({"classification": "breaking", "code": "auth_mechanism_incompatible", "detail": f"{key}: {reference_value} != {candidate_value}"})
     return findings
 
 
@@ -578,19 +668,28 @@ def build_api_compatibility(
         "additive": sum(1 for item in records if item["classification"] == "additive"),
         "breaking": sum(1 for item in records if item["classification"] == "breaking"),
         "unknown": sum(1 for item in records if item["classification"] == "unknown"),
+        "security_drift": sum(
+            1
+            for item in records
+            for finding in _as_list(item.get("findings"))
+            if isinstance(finding, dict) and str(finding.get("code")).startswith("security_policy_drift")
+        ),
         "required_reference_endpoints": len(required_reference),
         "excluded_reference_endpoints": len(excluded_reference),
     }
+    reference_trace = _input_trace(reference)
+    candidate_trace = _input_trace(candidate)
     payload = {
         "schema_version": API_COMPATIBILITY_SCHEMA_VERSION,
         "comparison_id": _digest(
             "api-compatibility",
             {
-                "reference": reference.payload["catalog_id"],
-                "candidate": candidate.payload["catalog_id"],
+                "reference": reference_trace,
+                "candidate": candidate_trace,
                 "gate_mode": gate_mode,
                 "include": include_endpoints,
                 "exclude": exclude_endpoints,
+                "enforce_security_policy": enforce_security_policy,
             },
         ),
         "auditor_version": __version__,
@@ -603,8 +702,8 @@ def build_api_compatibility(
             "endpoint_order": "endpoint_id",
         },
         "inputs": {
-            "reference_catalog_id": reference.payload["catalog_id"],
-            "candidate_catalog_id": candidate.payload["catalog_id"],
+            "reference": reference_trace,
+            "candidate": candidate_trace,
         },
         "scope": {
             "include_endpoints": list(include_endpoints),
@@ -634,6 +733,7 @@ def render_api_compatibility_markdown(payload: dict[str, object]) -> str:
         f"- additive: {summary.get('additive', 0)}",
         f"- breaking: {summary.get('breaking', 0)}",
         f"- unknown: {summary.get('unknown', 0)}",
+        f"- security drift: {summary.get('security_drift', 0)}",
         "",
         "## Records",
     ]

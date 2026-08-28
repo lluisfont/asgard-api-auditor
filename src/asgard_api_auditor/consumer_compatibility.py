@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 from . import __version__
-from .api_compatibility import load_catalog
+from .api_compatibility import CatalogSnapshot, load_catalog
 from .constants import CONSUMER_COMPATIBILITY_SCHEMA_VERSION
 from .redaction import contains_unredacted_secret_like_value, redact_text
 from .schema_validation import SchemaValidationError, validate_json_schema
@@ -64,6 +64,25 @@ def _as_list(value: object) -> list[object]:
 
 def _strings(value: object) -> set[str]:
     return {item for item in _as_list(value) if isinstance(item, str)}
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _input_trace(snapshot: CatalogSnapshot) -> dict[str, object]:
+    payload = snapshot.payload
+    path = snapshot.path
+    metadata = _as_dict(payload.get("metadata"))
+    return {
+        "catalog_id": payload.get("catalog_id"),
+        "repository_id": metadata.get("repository_id"),
+        "source_ref": metadata.get("source_ref"),
+        "source_commit": metadata.get("source_commit"),
+        "auditor_version": payload.get("auditor_version"),
+        "schema_version": payload.get("schema_version"),
+        "sha256": _file_sha256(path),
+    }
 
 
 def _endpoint_values(endpoint: dict[str, object]) -> set[str]:
@@ -117,6 +136,25 @@ def _field_type(schema: object, field: str) -> object:
     properties = _as_dict(_as_dict(schema).get("properties"))
     field_schema = _as_dict(properties.get(field))
     return field_schema.get("type") or field_schema.get("format")
+
+
+def _parameter_key(parameter: dict[str, object]) -> tuple[str, str]:
+    return (str(parameter.get("location")), str(parameter.get("name")))
+
+
+def _parameter_type(parameter: dict[str, object]) -> object:
+    schema = _as_dict(parameter.get("schema"))
+    return schema.get("type") or schema.get("format")
+
+
+def _material_contract_checks(consumer: dict[str, object], provider: dict[str, object]) -> list[dict[str, object]]:
+    checks: list[dict[str, object]] = []
+    for role, endpoint in (("consumer", consumer), ("provider", provider)):
+        if endpoint.get("contract_status") in {"partial", "unresolved", "unknown", None}:
+            checks.append({"status": "unknown", "code": f"{role}_contract_status_partial", "detail": str(endpoint.get("contract_status"))})
+        if endpoint.get("semantic_status") in {"partial", "unresolved", "unknown", None}:
+            checks.append({"status": "unknown", "code": f"{role}_semantic_status_partial", "detail": str(endpoint.get("semantic_status"))})
+    return checks
 
 
 def _request_checks(consumer: dict[str, object], provider: dict[str, object]) -> list[dict[str, object]]:
@@ -199,8 +237,13 @@ def _response_checks(consumer: dict[str, object], provider: dict[str, object]) -
 def _parameter_checks(consumer: dict[str, object], provider: dict[str, object]) -> list[dict[str, object]]:
     checks: list[dict[str, object]] = []
     consumer_params = {
-        (str(item.get("location")), str(item.get("name"))): item
+        _parameter_key(item): item
         for item in _as_list(consumer.get("parameters"))
+        if isinstance(item, dict)
+    }
+    provider_params = {
+        _parameter_key(item): item
+        for item in _as_list(provider.get("parameters"))
         if isinstance(item, dict)
     }
     for source, parameters in (("consumer", consumer.get("parameters")), ("provider", provider.get("parameters"))):
@@ -218,6 +261,28 @@ def _parameter_checks(consumer: dict[str, object], provider: dict[str, object]) 
         key = (str(item.get("location")), str(item.get("name")))
         if key not in consumer_params:
             checks.append({"status": "breaking", "code": "provider_requires_unsent_parameter", "detail": f"{key[0]}:{key[1]}"})
+    for key, item in sorted(consumer_params.items()):
+        provider_param = provider_params.get(key)
+        detail = f"{key[0]}:{key[1]}"
+        if provider_param is None:
+            if _as_dict(provider.get("request")).get("rejects_additional_parameters") is True:
+                checks.append({"status": "breaking", "code": "provider_rejects_consumer_parameter", "detail": detail})
+            elif _as_dict(provider.get("request")).get("accepts_additional_parameters") is True:
+                checks.append({"status": "compatible", "code": "provider_accepts_consumer_parameter", "detail": detail})
+            else:
+                checks.append({"status": "unknown", "code": "provider_parameter_acceptance_unknown", "detail": detail})
+            continue
+        consumer_required = item.get("required")
+        provider_required = provider_param.get("required")
+        if consumer_required is None or provider_required is None:
+            checks.append({"status": "unknown", "code": "parameter_requiredness_unknown", "detail": detail})
+        consumer_type = _parameter_type(item)
+        provider_type = _parameter_type(provider_param)
+        if consumer_type is None or provider_type is None:
+            checks.append({"status": "unknown", "code": "parameter_type_unknown", "detail": detail})
+        elif consumer_type != provider_type:
+            code = "path_parameter_type_incompatible" if key[0] == "path" else "parameter_type_incompatible"
+            checks.append({"status": "breaking", "code": code, "detail": detail})
     return checks
 
 
@@ -229,17 +294,45 @@ def _content_type_checks(consumer: dict[str, object], provider: dict[str, object
     provider_response = _as_dict(provider.get("response"))
     consumer_type = consumer_request.get("content_type")
     provider_type = provider_request.get("content_type")
+    request_material = bool(
+        _strings(consumer_request.get("fields"))
+        or _strings(provider_request.get("fields"))
+        or _strings(provider_request.get("required_fields"))
+    )
     if consumer_type and provider_type and consumer_type != provider_type:
         checks.append({"status": "breaking", "code": "request_content_type_incompatible", "detail": f"{consumer_type} != {provider_type}"})
-    elif consumer_type is None or provider_type is None:
+    elif request_material and (consumer_type is None or provider_type is None):
         checks.append({"status": "unknown", "code": "request_content_type_unknown", "detail": "missing content type evidence"})
     consumer_response_type = consumer_response.get("content_type")
     provider_response_type = provider_response.get("content_type")
+    response_material = bool(
+        _strings(consumer_response.get("fields_used_by_consumer"))
+        or _strings(consumer_response.get("required_fields"))
+        or _strings(provider_response.get("fields"))
+    )
     if consumer_response_type and provider_response_type and consumer_response_type != provider_response_type:
         checks.append({"status": "breaking", "code": "response_content_type_incompatible", "detail": f"{consumer_response_type} != {provider_response_type}"})
-    elif consumer_response_type is None or provider_response_type is None:
+    elif response_material and (consumer_response_type is None or provider_response_type is None):
         checks.append({"status": "unknown", "code": "response_content_type_unknown", "detail": "missing response content type evidence"})
     return checks
+
+
+def _auth_profile(endpoint: dict[str, object]) -> dict[str, object]:
+    auth = _as_dict(endpoint.get("authentication"))
+    security = _as_dict(endpoint.get("security"))
+    schemes = sorted(_strings(auth.get("schemes")) | _strings(security.get("schemes")))
+    return {
+        "authentication": auth.get("authentication") or security.get("authentication"),
+        "authorization": auth.get("authorization") or security.get("authorization"),
+        "credential_format": auth.get("credential_format") or security.get("credential_format"),
+        "scheme": auth.get("scheme") or security.get("scheme"),
+        "schemes": schemes,
+        "header_semantics": auth.get("header_semantics") or security.get("header_semantics"),
+    }
+
+
+def _auth_demonstrated(profile: dict[str, object]) -> bool:
+    return any(value for value in profile.values())
 
 
 def _auth_checks(consumer: dict[str, object], provider: dict[str, object], *, enforce_security_policy: bool) -> list[dict[str, object]]:
@@ -256,6 +349,19 @@ def _auth_checks(consumer: dict[str, object], provider: dict[str, object], *, en
         checks.append({"status": "breaking", "code": "security_policy_drift_weaker_provider_authentication", "detail": "authentication"})
     elif provider_requires is False and consumer_has_auth:
         checks.append({"status": "compatible", "code": "security_policy_drift_weaker_provider_authentication", "detail": "reported separately"})
+    if provider_requires is True:
+        consumer_profile = _auth_profile(consumer)
+        provider_profile = _auth_profile(provider)
+        if not _auth_demonstrated(provider_profile) or not _auth_demonstrated(consumer_profile):
+            checks.append({"status": "unknown", "code": "auth_mechanism_compatibility_unknown", "detail": "authentication mechanism is not fully demonstrated"})
+        for key, provider_value in provider_profile.items():
+            consumer_value = consumer_profile.get(key)
+            if not provider_value:
+                continue
+            if not consumer_value:
+                checks.append({"status": "unknown", "code": "consumer_credential_mechanism_unknown", "detail": str(key)})
+            elif consumer_value != provider_value:
+                checks.append({"status": "breaking", "code": "consumer_credential_mechanism_incompatible", "detail": f"{key}: {consumer_value} != {provider_value}"})
     return checks
 
 
@@ -298,7 +404,8 @@ def _compatibility_record(
         }
     provider = providers[0]
     checks = (
-        _parameter_checks(consumer, provider)
+        _material_contract_checks(consumer, provider)
+        + _parameter_checks(consumer, provider)
         + _content_type_checks(consumer, provider)
         + _request_checks(consumer, provider)
         + _response_checks(consumer, provider)
@@ -379,24 +486,27 @@ def build_consumer_compatibility(
         "required_dependencies": len(required_consumed),
         "excluded_dependencies": len(excluded_consumed),
     }
+    consumer_traces = [_input_trace(item) for item in consumers]
+    provider_traces = [_input_trace(item) for item in providers]
     payload = {
         "schema_version": CONSUMER_COMPATIBILITY_SCHEMA_VERSION,
         "compatibility_id": _digest(
             "consumer-compatibility",
             {
-                "consumers": [item.payload["catalog_id"] for item in consumers],
-                "providers": [item.payload["catalog_id"] for item in providers],
+                "consumers": consumer_traces,
+                "providers": provider_traces,
                 "gate_mode": gate_mode,
                 "include": include_endpoints,
                 "exclude": exclude_endpoints,
+                "enforce_security_policy": enforce_security_policy,
             },
         ),
         "auditor_version": __version__,
         "generated_at": datetime.now(UTC).isoformat(),
         "mode": "provider_consumer",
         "inputs": {
-            "consumer_catalog_ids": [item.payload["catalog_id"] for item in consumers],
-            "provider_catalog_ids": [item.payload["catalog_id"] for item in providers],
+            "consumers": consumer_traces,
+            "providers": provider_traces,
         },
         "scope": {
             "include_endpoints": list(include_endpoints),

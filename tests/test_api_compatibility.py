@@ -24,16 +24,22 @@ def _endpoint(
     direction: str = "exposed",
     request_fields: dict[str, str] | None = None,
     request_required: list[str] | None = None,
+    request_optional: list[str] | None = None,
     response_fields: dict[str, str] | None = None,
+    response_optional: list[str] | None = None,
     response_statuses: list[int] | None = None,
     request_content_type: str | None = "application/json",
     response_content_type: str | None = "application/json",
     parameters: list[dict[str, object]] | None = None,
     behavior: dict[str, object] | None = None,
     auth_required: bool | None = False,
+    auth_mechanism: str | None = None,
+    authorization: str | None = None,
+    auth_schemes: list[str] | None = None,
     contract_status: str = "complete",
     semantic_status: str = "complete",
     status_code_compatibility: dict[str, str] | None = None,
+    additional_fields_backward_compatible: bool | None = None,
 ) -> dict[str, object]:
     request_fields = request_fields or {}
     response_fields = response_fields or {}
@@ -61,7 +67,7 @@ def _endpoint(
             "body_schema": _schema(request_fields, request_required),
             "fields": sorted(request_fields),
             "required_fields": request_required or [],
-            "optional_fields": sorted(set(request_fields) - set(request_required or [])),
+            "optional_fields": request_optional or [],
             "unknown_requiredness_fields": [],
             "evidence": [],
             "unresolved": [],
@@ -71,7 +77,10 @@ def _endpoint(
             "content_type": response_content_type,
             "schema": _schema(response_fields, sorted(response_fields)),
             "fields": sorted(response_fields),
-            "required_fields": sorted(response_fields),
+            "required_fields": sorted(set(response_fields) - set(response_optional or [])),
+            "optional_fields": response_optional or [],
+            "unknown_requiredness_fields": [],
+            "additional_fields_backward_compatible": additional_fields_backward_compatible,
             "fields_used_by_consumer": [],
             "tolerates_additional_fields": True,
             "tolerates_additional_statuses": True,
@@ -80,7 +89,7 @@ def _endpoint(
             "unresolved": [],
         },
         "headers": [],
-        "authentication": {"authentication": "jwt" if auth_required else None, "authorization": None, "schemes": [], "required": auth_required, "evidence": [], "unresolved": []},
+        "authentication": {"authentication": auth_mechanism or ("jwt" if auth_required else None), "authorization": authorization, "schemes": auth_schemes or [], "required": auth_required, "evidence": [], "unresolved": []},
         "security": {"policy": "unknown", "drift": []},
         "behavior": behavior or {"summary": "fixture", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {}},
         "contract_status": contract_status,
@@ -302,6 +311,85 @@ class ApiCompatibilityTests(unittest.TestCase):
             _catalog(candidate, [_endpoint("POST", "/items", request_fields={"id": "string"}, response_fields={"id": "string"}, response_content_type="application/xml")], repo="candidate")
             self.assertIn("response_content_type_incompatible", [item["code"] for item in build_api_compatibility(reference, candidate)["records"][0]["findings"]])
 
+    def test_absent_content_type_is_unknown_only_when_body_material(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            _catalog(reference, [_endpoint("GET", "/health", request_content_type=None, response_content_type=None)], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/health", request_content_type=None, response_content_type=None)], repo="candidate")
+
+            payload = build_api_compatibility(reference, candidate)
+
+            codes = [item["code"] for item in payload["records"][0]["findings"]]
+            self.assertNotIn("request_content_type_unknown", codes)
+            self.assertNotIn("response_content_type_unknown", codes)
+
+    def test_auth_mechanism_mismatch_is_breaking_even_when_required_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            _catalog(reference, [_endpoint("GET", "/secure", auth_required=True, auth_mechanism="jwt", authorization="raw", auth_schemes=["raw-jwt"])], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/secure", auth_required=True, auth_mechanism="jwt", authorization="bearer", auth_schemes=["bearer"])], repo="candidate")
+
+            payload = build_api_compatibility(reference, candidate)
+
+            self.assertEqual(payload["records"][0]["classification"], "breaking")
+            self.assertIn("auth_mechanism_incompatible", [item["code"] for item in payload["records"][0]["findings"]])
+
+    def test_auth_mechanism_unknown_remains_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            _catalog(reference, [_endpoint("GET", "/secure", auth_required=True, auth_mechanism="jwt")], repo="reference")
+            unknown = _endpoint("GET", "/secure", auth_required=True)
+            unknown["authentication"]["authentication"] = None
+            _catalog(candidate, [unknown], repo="candidate")
+
+            payload = build_api_compatibility(reference, candidate)
+
+            self.assertEqual(payload["records"][0]["classification"], "unknown")
+            self.assertIn("auth_mechanism_compatibility_unknown", [item["code"] for item in payload["records"][0]["findings"]])
+
+    def test_request_field_additions_require_requiredness_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            _catalog(reference, [_endpoint("POST", "/items", request_fields={"id": "string"}, request_required=["id"])], repo="reference")
+            _catalog(candidate, [_endpoint("POST", "/items", request_fields={"id": "string", "comment": "string"}, request_required=["id", "comment"])], repo="candidate")
+            self.assertIn("required_request_field_added", [item["code"] for item in build_api_compatibility(reference, candidate)["records"][0]["findings"]])
+
+            _catalog(candidate, [_endpoint("POST", "/items", request_fields={"id": "string", "comment": "string"}, request_required=["id"], request_optional=["comment"])], repo="candidate")
+            optional = build_api_compatibility(reference, candidate)
+            self.assertEqual(optional["records"][0]["classification"], "additive")
+            self.assertIn("optional_request_field_added", [item["code"] for item in optional["records"][0]["findings"]])
+
+            unknown_endpoint = _endpoint("POST", "/items", request_fields={"id": "string", "comment": "string"}, request_required=["id"])
+            unknown_endpoint["request"]["unknown_requiredness_fields"] = ["comment"]
+            _catalog(candidate, [unknown_endpoint], repo="candidate")
+            unknown = build_api_compatibility(reference, candidate)
+            self.assertEqual(unknown["records"][0]["classification"], "unknown")
+
+    def test_response_field_additions_require_compatibility_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            reference_endpoint = _endpoint("GET", "/items", response_fields={"id": "string"})
+            reference_endpoint["response"]["tolerates_additional_fields"] = None
+            _catalog(reference, [reference_endpoint], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/items", response_fields={"id": "string", "description": "string"}, response_optional=["description"])], repo="candidate")
+            unknown = build_api_compatibility(reference, candidate)
+            self.assertEqual(unknown["records"][0]["classification"], "unknown")
+
+            _catalog(candidate, [_endpoint("GET", "/items", response_fields={"id": "string", "description": "string"}, response_optional=["description"], additional_fields_backward_compatible=True)], repo="candidate")
+            additive = build_api_compatibility(reference, candidate)
+            self.assertEqual(additive["records"][0]["classification"], "additive")
+            self.assertIn("response_fields_added_compatible", [item["code"] for item in additive["records"][0]["findings"]])
+
     def test_material_behavior_contradiction_and_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -315,6 +403,53 @@ class ApiCompatibilityTests(unittest.TestCase):
 
             _catalog(candidate, [_endpoint("POST", "/items", behavior=other_effect, semantic_status="unknown")], repo="candidate")
             self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "unknown")
+
+    def test_internal_semantic_drift_is_reported_without_api_breaking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            reference_behavior = {"summary": "fixture", "data_access": [{"table": "a"}], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": ["A"], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id"}}
+            candidate_behavior = {"summary": "fixture", "data_access": [{"table": "b"}], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": ["B"], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id"}}
+            _catalog(reference, [_endpoint("GET", "/items", behavior=reference_behavior)], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/items", behavior=candidate_behavior)], repo="candidate")
+
+            payload = build_api_compatibility(reference, candidate)
+
+            self.assertEqual(payload["records"][0]["classification"], "same")
+            self.assertIn("internal_semantic_drift_reported", [item["code"] for item in payload["records"][0]["findings"]])
+
+    def test_response_semantics_incompatible_or_additional_are_external_contract_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            reference_behavior = {"summary": "fixture", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id"}}
+            incompatible_behavior = {"summary": "fixture", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns error"}}
+            _catalog(reference, [_endpoint("GET", "/items", behavior=reference_behavior)], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/items", behavior=incompatible_behavior)], repo="candidate")
+            self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "breaking")
+
+            additive_behavior = {"summary": "fixture", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id", "cache": "may include etag"}}
+            _catalog(candidate, [_endpoint("GET", "/items", behavior=additive_behavior)], repo="candidate")
+            self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "additive")
+
+    def test_inputs_are_traceable_and_policy_changes_comparison_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            _catalog(reference, [_endpoint("GET", "/items")], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/items")], repo="candidate")
+
+            loose = build_api_compatibility(reference, candidate, enforce_security_policy=False)
+            strict = build_api_compatibility(reference, candidate, enforce_security_policy=True)
+
+            self.assertNotEqual(loose["comparison_id"], strict["comparison_id"])
+            self.assertEqual(loose["inputs"]["reference"]["repository_id"], "reference")
+            self.assertEqual(loose["inputs"]["candidate"]["source_ref"], "main")
+            self.assertEqual(len(loose["inputs"]["reference"]["sha256"]), 64)
+            self.assertIn("security_drift", loose["summary"])
 
     def test_artifact_equal_ignores_key_order_and_volatile_metadata_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
