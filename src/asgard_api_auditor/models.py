@@ -79,6 +79,8 @@ class RequestFinding:
     content_type: str | None = None
     body_schema: dict[str, object] | None = None
     fields: list[str] = field(default_factory=list)
+    accepts_additional_parameters: bool | None = None
+    rejects_additional_parameters: bool | None = None
 
 
 @dataclass
@@ -88,6 +90,10 @@ class ResponseFinding:
     schema: dict[str, object] | None = None
     fields: list[str] = field(default_factory=list)
     fields_used_by_consumer: list[str] = field(default_factory=list)
+    additional_fields_backward_compatible: bool | None = None
+    tolerates_additional_fields: bool | None = None
+    tolerates_additional_statuses: bool | None = None
+    status_code_compatibility: dict[str, str] | None = None
 
 
 @dataclass
@@ -105,6 +111,9 @@ class EndpointFinding:
     handler: str | None = None
     authentication: str | None = None
     authorization: str | None = None
+    credential_format: str | None = None
+    scheme: str | None = None
+    header_semantics: str | None = None
     request: RequestFinding | None = None
     response: ResponseFinding | None = None
     behavior: dict[str, object] | None = None

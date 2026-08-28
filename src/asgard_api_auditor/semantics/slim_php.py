@@ -863,6 +863,30 @@ def _summary(endpoint: EndpointFinding, reads: list[str], writes: list[str], out
     return f"{endpoint.method} {endpoint.path} has {status} source semantics"
 
 
+def _partial_materiality(unresolved: list[SemanticUnresolved]) -> str:
+    if not unresolved:
+        return "unknown"
+    external_markers = (
+        "condition",
+        "outbound",
+        "response",
+        "side_effect",
+        "status",
+    )
+    internal_codes = {
+        "slim_php_semantic_sql_call_unparsed",
+        "slim_php_semantic_dynamic_sql",
+        "slim_php_semantic_sql_target_unresolved",
+        "slim_php_semantic_sql_dynamic_expression",
+    }
+    codes = {item.code for item in unresolved}
+    if any(any(marker in code for marker in external_markers) for code in codes):
+        return "external"
+    if codes and codes <= internal_codes:
+        return "internal"
+    return "unknown"
+
+
 def _behavior(builder: _Builder) -> tuple[dict[str, object], list[SemanticUnresolved]]:
     data_access = _dedupe_dicts(builder.data_access)
     outbound = _dedupe_dicts(builder.outbound)
@@ -892,7 +916,7 @@ def _behavior(builder: _Builder) -> tuple[dict[str, object], list[SemanticUnreso
         evidence = builder.endpoint.evidence[0] if builder.endpoint.evidence else Evidence(relative_path(builder.repository, builder.source.file), kind="controller")
         unresolved = [SemanticUnresolved("slim_php_semantic_no_supported_facts", "No supported semantic facts were reconstructed from this route.", (evidence,))]
     response_fields = sorted(builder.endpoint.response.fields if builder.endpoint.response else [])
-    return {
+    payload: dict[str, object] = {
         "schema_version": "1.0",
         "semantic_status": status,
         "confidence": "confirmed" if facts else "unverified",
@@ -916,7 +940,10 @@ def _behavior(builder: _Builder) -> tuple[dict[str, object], list[SemanticUnreso
         "side_effects": side_effects,
         "unresolved": [{"code": item.code, "message": item.message, "evidence": [_safe_evidence(ev) for ev in item.evidence]} for item in unresolved],
         "evidence": [_safe_evidence(item) for item in sorted(builder.endpoint.evidence, key=lambda item: (item.path, item.line or 0, item.note or ""))],
-    }, unresolved
+    }
+    if status == "partial":
+        payload["semantic_partial_materiality"] = _partial_materiality(unresolved)
+    return payload, unresolved
 
 
 def semantic_unresolved_payload(issue: SemanticUnresolved) -> dict[str, object]:
@@ -953,6 +980,7 @@ def enrich_slim_php_semantics(
                 "confidence": "unverified",
                 "summary": f"{endpoint.method} {endpoint.path} semantic source unresolved",
                 "source_module": None,
+                "semantic_partial_materiality": "unknown",
                 "tags": ["module:unknown"],
                 "request_fields": [],
                 "data_access": [],
