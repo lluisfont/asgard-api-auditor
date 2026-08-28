@@ -185,7 +185,25 @@ def validate_v08_schemas() -> None:
     require("schema_version" not in stable_required, "stable identity must not include schema version")
     compatibility = json.loads((ROOT / "schemas" / "api-compatibility.schema.json").read_text(encoding="utf-8"))
     compatibility_summary = set(compatibility["$defs"]["summary"]["required"])
-    require("security_drift" in compatibility_summary, "api compatibility summary must count security drift")
+    for key in (
+        "reference_endpoints",
+        "candidate_endpoints",
+        "scoped_reference_endpoints",
+        "artifact_equal_endpoints",
+        "observed_equal_endpoints",
+        "removed_endpoints",
+        "added_endpoints",
+        "changed_endpoints",
+        "security_drift",
+        "unresolved",
+    ):
+        require(key in compatibility_summary, f"api compatibility summary must count {key}")
+    consumer = json.loads((ROOT / "schemas" / "consumer-compatibility.schema.json").read_text(encoding="utf-8"))
+    consumer_summary = set(consumer["$defs"]["summary"]["required"])
+    require(
+        "total_consumed_dependencies" in consumer_summary,
+        "consumer compatibility summary must count total consumed dependencies",
+    )
 
     compatibility = json.loads(
         (ROOT / "schemas" / "api-compatibility.schema.json").read_text(encoding="utf-8")

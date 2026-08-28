@@ -224,7 +224,10 @@ def _material_unknown(endpoint: dict[str, object]) -> list[str]:
     auth = _as_dict(endpoint.get("authentication"))
     if endpoint.get("contract_status") in {None, "unknown", "partial", "required_not_complete"}:
         reasons.append("contract_status")
-    if endpoint.get("semantic_status") in {None, "unknown", "partial", "unresolved"}:
+    semantic_status = endpoint.get("semantic_status")
+    if semantic_status in {None, "unknown", "unresolved"} or (
+        semantic_status == "partial" and _semantic_partial_materiality(endpoint) != "internal"
+    ):
         reasons.append("semantic_status")
     if _strings(request.get("unknown_requiredness_fields")):
         reasons.append("request_requiredness")
@@ -257,10 +260,36 @@ def _material_unknown(endpoint: dict[str, object]) -> list[str]:
     return sorted(set(reasons))
 
 
-def _field_type(schema: object, field: str) -> object:
+def _field_profile(schema: object, field: str) -> dict[str, object]:
     properties = _as_dict(_as_dict(schema).get("properties"))
     field_schema = _as_dict(properties.get(field))
-    return field_schema.get("type") or field_schema.get("format")
+    return {"type": field_schema.get("type"), "format": field_schema.get("format")}
+
+
+def _compare_schema_profile(
+    before: dict[str, object],
+    after: dict[str, object],
+    *,
+    detail: str,
+    type_code: str,
+    format_code: str,
+    unknown_type_code: str,
+    unknown_format_code: str,
+) -> list[dict[str, object]]:
+    findings: list[dict[str, object]] = []
+    before_type = before.get("type")
+    after_type = after.get("type")
+    if before_type is None or after_type is None:
+        findings.append({"classification": "unknown", "code": unknown_type_code, "detail": detail})
+    elif before_type != after_type:
+        findings.append({"classification": "breaking", "code": type_code, "detail": detail})
+    before_format = before.get("format")
+    after_format = after.get("format")
+    if before_format and after_format and before_format != after_format:
+        findings.append({"classification": "breaking", "code": format_code, "detail": detail})
+    elif bool(before_format) != bool(after_format):
+        findings.append({"classification": "unknown", "code": unknown_format_code, "detail": detail})
+    return findings
 
 
 def _compare_request(reference: dict[str, object], candidate: dict[str, object]) -> list[dict[str, object]]:
@@ -286,10 +315,17 @@ def _compare_request(reference: dict[str, object], candidate: dict[str, object])
     for field in sorted(_strings(reference_request.get("unknown_requiredness_fields")) | _strings(candidate_request.get("unknown_requiredness_fields"))):
         findings.append({"classification": "unknown", "code": "request_field_requiredness_unknown", "detail": field})
     for field in sorted(reference_fields & candidate_fields):
-        before = _field_type(reference_request.get("body_schema"), field)
-        after = _field_type(candidate_request.get("body_schema"), field)
-        if before is not None and after is not None and before != after:
-            findings.append({"classification": "breaking", "code": "request_field_type_changed", "detail": field})
+        findings.extend(
+            _compare_schema_profile(
+                _field_profile(reference_request.get("body_schema"), field),
+                _field_profile(candidate_request.get("body_schema"), field),
+                detail=field,
+                type_code="request_field_type_changed",
+                format_code="request_field_format_changed",
+                unknown_type_code="request_field_type_unknown",
+                unknown_format_code="request_field_format_unknown",
+            )
+        )
     before_type = reference_request.get("content_type")
     after_type = candidate_request.get("content_type")
     if before_type and after_type and before_type != after_type:
@@ -308,10 +344,17 @@ def _compare_response(reference: dict[str, object], candidate: dict[str, object]
     for field in sorted(reference_fields - candidate_fields):
         findings.append({"classification": "breaking", "code": "response_field_removed", "detail": field})
     for field in sorted(reference_fields & candidate_fields):
-        before = _field_type(reference_response.get("schema"), field)
-        after = _field_type(candidate_response.get("schema"), field)
-        if before is not None and after is not None and before != after:
-            findings.append({"classification": "breaking", "code": "response_field_type_changed", "detail": field})
+        findings.extend(
+            _compare_schema_profile(
+                _field_profile(reference_response.get("schema"), field),
+                _field_profile(candidate_response.get("schema"), field),
+                detail=field,
+                type_code="response_field_type_changed",
+                format_code="response_field_format_changed",
+                unknown_type_code="response_field_type_unknown",
+                unknown_format_code="response_field_format_unknown",
+            )
+        )
     before_statuses = {code for code in _as_list(reference_response.get("status_codes")) if isinstance(code, int)}
     after_statuses = {code for code in _as_list(candidate_response.get("status_codes")) if isinstance(code, int)}
     for code in sorted(before_statuses - after_statuses):
@@ -356,9 +399,9 @@ def _parameter_key(parameter: dict[str, object]) -> tuple[str, str]:
     return (str(parameter.get("location")), str(parameter.get("name")))
 
 
-def _parameter_type(parameter: dict[str, object]) -> object:
+def _parameter_profile(parameter: dict[str, object]) -> dict[str, object]:
     schema = _as_dict(parameter.get("schema"))
-    return schema.get("type") or schema.get("format")
+    return {"type": schema.get("type"), "format": schema.get("format")}
 
 
 def _parameter_label(key: tuple[str, str]) -> str:
@@ -389,13 +432,18 @@ def _compare_parameters(reference: dict[str, object], candidate: dict[str, objec
             findings.append({"classification": "unknown", "code": "parameter_requiredness_unknown", "detail": _parameter_label(key)})
         elif before_required is False and after_required is True:
             findings.append({"classification": "breaking", "code": "parameter_requiredness_became_stricter", "detail": _parameter_label(key)})
-        before_type = _parameter_type(parameter)
-        after_type = _parameter_type(candidate_parameter)
-        if before_type is None or after_type is None:
-            findings.append({"classification": "unknown", "code": "parameter_type_unknown", "detail": _parameter_label(key)})
-        elif before_type != after_type:
-            code = "path_parameter_incompatible_type" if key[0] == "path" else "parameter_incompatible_type"
-            findings.append({"classification": "breaking", "code": code, "detail": _parameter_label(key)})
+        label = _parameter_label(key)
+        findings.extend(
+            _compare_schema_profile(
+                _parameter_profile(parameter),
+                _parameter_profile(candidate_parameter),
+                detail=label,
+                type_code="path_parameter_incompatible_type" if key[0] == "path" else "parameter_incompatible_type",
+                format_code="path_parameter_incompatible_format" if key[0] == "path" else "parameter_incompatible_format",
+                unknown_type_code="parameter_type_unknown",
+                unknown_format_code="parameter_format_unknown",
+            )
+        )
     for key, parameter in sorted(candidate_params.items()):
         if key in reference_params:
             continue
@@ -429,9 +477,42 @@ def _internal_behavior(endpoint: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _side_effect_compatibility(effect_json: str) -> str:
+    try:
+        effect = json.loads(effect_json)
+    except json.JSONDecodeError:
+        return "unknown"
+    if not isinstance(effect, dict):
+        return "unknown"
+    compatibility = effect.get("compatibility") or effect.get("backward_compatibility")
+    if compatibility in {"compatible", "additive"} or effect.get("backward_compatible") is True:
+        return "compatible"
+    if compatibility in {"breaking", "incompatible"} or effect.get("backward_compatible") is False:
+        return "breaking"
+    return "unknown"
+
+
+def _semantic_partial_materiality(endpoint: dict[str, object]) -> str:
+    if endpoint.get("semantic_status") != "partial":
+        return "not_partial"
+    behavior = _as_dict(endpoint.get("behavior"))
+    scope = behavior.get("semantic_partial_scope") or behavior.get("semantic_uncertainty_scope")
+    if scope in {"internal", "internal_only"}:
+        return "internal"
+    if scope in {"external", "external_contract", "response", "side_effect"}:
+        return "external"
+    return "unknown"
+
+
 def _compare_behavior(reference: dict[str, object], candidate: dict[str, object]) -> list[dict[str, object]]:
     findings: list[dict[str, object]] = []
-    if reference.get("semantic_status") in {"unknown", "partial", "unresolved"} or candidate.get("semantic_status") in {"unknown", "partial", "unresolved"}:
+    materialities = {
+        _semantic_partial_materiality(reference),
+        _semantic_partial_materiality(candidate),
+    }
+    if reference.get("semantic_status") in {"unknown", "unresolved"} or candidate.get("semantic_status") in {"unknown", "unresolved"}:
+        return [{"classification": "unknown", "code": "semantic_behavior_unknown", "detail": "material behavior is not fully reconstructed"}]
+    if "external" in materialities or "unknown" in materialities:
         return [{"classification": "unknown", "code": "semantic_behavior_unknown", "detail": "material behavior is not fully reconstructed"}]
     reference_external = _material_behavior(reference)
     candidate_external = _material_behavior(candidate)
@@ -449,7 +530,13 @@ def _compare_behavior(reference: dict[str, object], candidate: dict[str, object]
     for item in sorted(reference_effects - candidate_effects):
         findings.append({"classification": "breaking", "code": "external_side_effect_removed", "detail": item})
     for item in sorted(candidate_effects - reference_effects):
-        findings.append({"classification": "additive", "code": "external_side_effect_added", "detail": item})
+        compatibility = _side_effect_compatibility(item)
+        if compatibility == "compatible":
+            findings.append({"classification": "additive", "code": "external_side_effect_added_compatible", "detail": item})
+        elif compatibility == "breaking":
+            findings.append({"classification": "breaking", "code": "external_side_effect_added_breaking", "detail": item})
+        else:
+            findings.append({"classification": "unknown", "code": "external_side_effect_added_unknown", "detail": item})
     if _internal_behavior(reference) != _internal_behavior(candidate):
         findings.append({"classification": "same", "code": "internal_semantic_drift_reported", "detail": "internal data access or local calls differ"})
     return findings
@@ -664,18 +751,33 @@ def build_api_compatibility(
             })
     records.sort(key=lambda item: (str(item["method"]), str(item["path_shape"]), str(item["classification"])))
     summary = {
+        "reference_endpoints": len(reference_endpoints),
+        "candidate_endpoints": len(candidate_endpoints),
+        "scoped_reference_endpoints": len(required_reference),
+        "required_reference_endpoints": len(required_reference),
+        "excluded_reference_endpoints": len(excluded_reference),
         "same": sum(1 for item in records if item["classification"] == "same"),
         "additive": sum(1 for item in records if item["classification"] == "additive"),
         "breaking": sum(1 for item in records if item["classification"] == "breaking"),
         "unknown": sum(1 for item in records if item["classification"] == "unknown"),
+        "artifact_equal_endpoints": sum(1 for item in records if item.get("artifact_equal") is True),
+        "observed_equal_endpoints": sum(1 for item in records if item.get("observed_equal") is True),
+        "removed_endpoints": sum(1 for item in records if item.get("candidate_endpoint_id") is None),
+        "added_endpoints": sum(1 for item in records if item.get("reference_endpoint_id") is None),
+        "changed_endpoints": sum(
+            1
+            for item in records
+            if item.get("reference_endpoint_id") is not None
+            and item.get("candidate_endpoint_id") is not None
+            and item.get("artifact_equal") is not True
+        ),
         "security_drift": sum(
             1
             for item in records
             for finding in _as_list(item.get("findings"))
             if isinstance(finding, dict) and str(finding.get("code")).startswith("security_policy_drift")
         ),
-        "required_reference_endpoints": len(required_reference),
-        "excluded_reference_endpoints": len(excluded_reference),
+        "unresolved": sum(len(_as_list(item.get("unknown_reasons"))) for item in records),
     }
     reference_trace = _input_trace(reference)
     candidate_trace = _input_trace(candidate)

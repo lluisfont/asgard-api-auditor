@@ -124,7 +124,7 @@
     },
     "responseContract": {
       "type": "object",
-      "required": ["status_codes", "content_type", "schema", "fields", "required_fields", "fields_used_by_consumer", "tolerates_additional_fields", "tolerates_additional_statuses", "status_code_compatibility", "evidence", "unresolved"],
+      "required": ["status_codes", "content_type", "schema", "fields", "required_fields", "optional_fields", "unknown_requiredness_fields", "additional_fields_backward_compatible", "fields_used_by_consumer", "tolerates_additional_fields", "tolerates_additional_statuses", "status_code_compatibility", "evidence", "unresolved"],
       "properties": {
         "status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}},
         "content_type": {"type": ["string", "null"]},
@@ -145,7 +145,7 @@
     },
     "authenticationContract": {
       "type": "object",
-      "required": ["authentication", "authorization", "schemes", "required", "evidence", "unresolved"],
+      "required": ["authentication", "authorization", "credential_format", "scheme", "schemes", "header_semantics", "required", "evidence", "unresolved"],
       "properties": {
         "authentication": {"type": ["string", "null"]},
         "authorization": {"type": ["string", "null"]},

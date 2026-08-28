@@ -20,16 +20,17 @@
     "any": {"type": ["object", "array", "string", "integer", "number", "boolean", "null"]},
     "summary": {
       "type": "object",
-      "required": ["compatible", "breaking", "missing", "ambiguous", "unknown", "security_drift", "required_dependencies", "excluded_dependencies"],
+      "required": ["total_consumed_dependencies", "required_dependencies", "excluded_dependencies", "compatible", "breaking", "missing", "ambiguous", "unknown", "security_drift"],
       "properties": {
+        "total_consumed_dependencies": {"type": "integer", "minimum": 0},
+        "required_dependencies": {"type": "integer", "minimum": 0},
+        "excluded_dependencies": {"type": "integer", "minimum": 0},
         "compatible": {"type": "integer", "minimum": 0},
         "breaking": {"type": "integer", "minimum": 0},
         "missing": {"type": "integer", "minimum": 0},
         "ambiguous": {"type": "integer", "minimum": 0},
         "unknown": {"type": "integer", "minimum": 0},
-        "security_drift": {"type": "integer", "minimum": 0},
-        "required_dependencies": {"type": "integer", "minimum": 0},
-        "excluded_dependencies": {"type": "integer", "minimum": 0}
+        "security_drift": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": false
     },

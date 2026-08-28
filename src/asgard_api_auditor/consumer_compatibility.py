@@ -132,19 +132,57 @@ def _provider_index(providers: list[dict[str, object]]) -> dict[tuple[str, str],
     return indexed
 
 
-def _field_type(schema: object, field: str) -> object:
+def _field_profile(schema: object, field: str) -> dict[str, object]:
     properties = _as_dict(_as_dict(schema).get("properties"))
     field_schema = _as_dict(properties.get(field))
-    return field_schema.get("type") or field_schema.get("format")
+    return {"type": field_schema.get("type"), "format": field_schema.get("format")}
+
+
+def _compare_schema_profile(
+    consumer_profile: dict[str, object],
+    provider_profile: dict[str, object],
+    *,
+    detail: str,
+    type_code: str,
+    format_code: str,
+    unknown_type_code: str,
+    unknown_format_code: str,
+) -> list[dict[str, object]]:
+    checks: list[dict[str, object]] = []
+    consumer_type = consumer_profile.get("type")
+    provider_type = provider_profile.get("type")
+    if consumer_type is None or provider_type is None:
+        checks.append({"status": "unknown", "code": unknown_type_code, "detail": detail})
+    elif consumer_type != provider_type:
+        checks.append({"status": "breaking", "code": type_code, "detail": detail})
+    consumer_format = consumer_profile.get("format")
+    provider_format = provider_profile.get("format")
+    if consumer_format and provider_format and consumer_format != provider_format:
+        checks.append({"status": "breaking", "code": format_code, "detail": detail})
+    elif bool(consumer_format) != bool(provider_format):
+        checks.append({"status": "unknown", "code": unknown_format_code, "detail": detail})
+    return checks
 
 
 def _parameter_key(parameter: dict[str, object]) -> tuple[str, str]:
     return (str(parameter.get("location")), str(parameter.get("name")))
 
 
-def _parameter_type(parameter: dict[str, object]) -> object:
+def _parameter_profile(parameter: dict[str, object]) -> dict[str, object]:
     schema = _as_dict(parameter.get("schema"))
-    return schema.get("type") or schema.get("format")
+    return {"type": schema.get("type"), "format": schema.get("format")}
+
+
+def _semantic_partial_materiality(endpoint: dict[str, object]) -> str:
+    if endpoint.get("semantic_status") != "partial":
+        return "not_partial"
+    behavior = _as_dict(endpoint.get("behavior"))
+    scope = behavior.get("semantic_partial_scope") or behavior.get("semantic_uncertainty_scope")
+    if scope in {"internal", "internal_only"}:
+        return "internal"
+    if scope in {"external", "external_contract", "response", "side_effect"}:
+        return "external"
+    return "unknown"
 
 
 def _material_contract_checks(consumer: dict[str, object], provider: dict[str, object]) -> list[dict[str, object]]:
@@ -152,7 +190,10 @@ def _material_contract_checks(consumer: dict[str, object], provider: dict[str, o
     for role, endpoint in (("consumer", consumer), ("provider", provider)):
         if endpoint.get("contract_status") in {"partial", "unresolved", "unknown", None}:
             checks.append({"status": "unknown", "code": f"{role}_contract_status_partial", "detail": str(endpoint.get("contract_status"))})
-        if endpoint.get("semantic_status") in {"partial", "unresolved", "unknown", None}:
+        semantic_status = endpoint.get("semantic_status")
+        if semantic_status in {"unresolved", "unknown", None} or (
+            semantic_status == "partial" and _semantic_partial_materiality(endpoint) != "internal"
+        ):
             checks.append({"status": "unknown", "code": f"{role}_semantic_status_partial", "detail": str(endpoint.get("semantic_status"))})
     return checks
 
@@ -179,12 +220,17 @@ def _request_checks(consumer: dict[str, object], provider: dict[str, object]) ->
         else:
             checks.append({"status": "unknown", "code": "provider_request_field_acceptance_unknown", "detail": ",".join(sorted(extra_sent))})
     for field in sorted(consumer_fields & provider_fields):
-        consumer_type = _field_type(consumer_request.get("body_schema"), field)
-        provider_type = _field_type(provider_request.get("body_schema"), field)
-        if consumer_type is None or provider_type is None:
-            checks.append({"status": "unknown", "code": "request_field_type_unknown", "detail": field})
-        elif consumer_type != provider_type:
-            checks.append({"status": "breaking", "code": "request_field_type_incompatible", "detail": field})
+        checks.extend(
+            _compare_schema_profile(
+                _field_profile(consumer_request.get("body_schema"), field),
+                _field_profile(provider_request.get("body_schema"), field),
+                detail=field,
+                type_code="request_field_type_incompatible",
+                format_code="request_field_format_incompatible",
+                unknown_type_code="request_field_type_unknown",
+                unknown_format_code="request_field_format_unknown",
+            )
+        )
     return checks
 
 
@@ -209,12 +255,17 @@ def _response_checks(consumer: dict[str, object], provider: dict[str, object]) -
         else:
             checks.append({"status": "unknown", "code": "consumer_response_field_tolerance_unknown", "detail": ",".join(sorted(extra_provider_fields))})
     for field in sorted(required_fields & provider_fields):
-        consumer_type = _field_type(consumer_response.get("schema"), field)
-        provider_type = _field_type(provider_response.get("schema"), field)
-        if consumer_type is None or provider_type is None:
-            checks.append({"status": "unknown", "code": "response_field_type_unknown", "detail": field})
-        elif consumer_type != provider_type:
-            checks.append({"status": "breaking", "code": "response_field_type_incompatible", "detail": field})
+        checks.extend(
+            _compare_schema_profile(
+                _field_profile(consumer_response.get("schema"), field),
+                _field_profile(provider_response.get("schema"), field),
+                detail=field,
+                type_code="response_field_type_incompatible",
+                format_code="response_field_format_incompatible",
+                unknown_type_code="response_field_type_unknown",
+                unknown_format_code="response_field_format_unknown",
+            )
+        )
     consumer_statuses = {code for code in _as_list(consumer_response.get("status_codes")) if isinstance(code, int)}
     provider_statuses = {code for code in _as_list(provider_response.get("status_codes")) if isinstance(code, int)}
     if not consumer_statuses:
@@ -276,13 +327,17 @@ def _parameter_checks(consumer: dict[str, object], provider: dict[str, object]) 
         provider_required = provider_param.get("required")
         if consumer_required is None or provider_required is None:
             checks.append({"status": "unknown", "code": "parameter_requiredness_unknown", "detail": detail})
-        consumer_type = _parameter_type(item)
-        provider_type = _parameter_type(provider_param)
-        if consumer_type is None or provider_type is None:
-            checks.append({"status": "unknown", "code": "parameter_type_unknown", "detail": detail})
-        elif consumer_type != provider_type:
-            code = "path_parameter_type_incompatible" if key[0] == "path" else "parameter_type_incompatible"
-            checks.append({"status": "breaking", "code": code, "detail": detail})
+        checks.extend(
+            _compare_schema_profile(
+                _parameter_profile(item),
+                _parameter_profile(provider_param),
+                detail=detail,
+                type_code="path_parameter_type_incompatible" if key[0] == "path" else "parameter_type_incompatible",
+                format_code="path_parameter_format_incompatible" if key[0] == "path" else "parameter_format_incompatible",
+                unknown_type_code="parameter_type_unknown",
+                unknown_format_code="parameter_format_unknown",
+            )
+        )
     return checks
 
 
@@ -472,6 +527,9 @@ def build_consumer_compatibility(
     ]
     records.sort(key=lambda item: (str(item["method"]), str(item["path_shape"]), str(item["status"])))
     summary = {
+        "total_consumed_dependencies": len(consumed),
+        "required_dependencies": len(required_consumed),
+        "excluded_dependencies": len(excluded_consumed),
         "compatible": sum(1 for item in records if item["status"] == "compatible"),
         "breaking": sum(1 for item in records if item["status"] == "breaking"),
         "missing": sum(1 for item in records if item["status"] == "missing"),
@@ -483,8 +541,6 @@ def build_consumer_compatibility(
             for check in _as_list(item.get("checks"))
             if isinstance(check, dict) and str(check.get("code")).startswith("security_policy_drift")
         ),
-        "required_dependencies": len(required_consumed),
-        "excluded_dependencies": len(excluded_consumed),
     }
     consumer_traces = [_input_trace(item) for item in consumers]
     provider_traces = [_input_trace(item) for item in providers]

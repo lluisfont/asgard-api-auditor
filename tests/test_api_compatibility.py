@@ -9,10 +9,21 @@ from asgard_api_auditor.api_compatibility import ApiCompatibilityError, build_ap
 from asgard_api_auditor.catalog import endpoint_contract_id
 
 
-def _schema(fields: dict[str, str], required: list[str] | None = None) -> dict[str, object]:
+def _schema(
+    fields: dict[str, str | tuple[str, str | None]], required: list[str] | None = None
+) -> dict[str, object]:
+    properties: dict[str, dict[str, str]] = {}
+    for name, value in fields.items():
+        if isinstance(value, tuple):
+            type_name, format_name = value
+            properties[name] = {"type": type_name}
+            if format_name is not None:
+                properties[name]["format"] = format_name
+        else:
+            properties[name] = {"type": value}
     return {
         "type": "object",
-        "properties": {name: {"type": type_name} for name, type_name in fields.items()},
+        "properties": properties,
         "required": required or [],
     }
 
@@ -22,10 +33,10 @@ def _endpoint(
     path: str,
     *,
     direction: str = "exposed",
-    request_fields: dict[str, str] | None = None,
+    request_fields: dict[str, str | tuple[str, str | None]] | None = None,
     request_required: list[str] | None = None,
     request_optional: list[str] | None = None,
-    response_fields: dict[str, str] | None = None,
+    response_fields: dict[str, str | tuple[str, str | None]] | None = None,
     response_optional: list[str] | None = None,
     response_statuses: list[int] | None = None,
     request_content_type: str | None = "application/json",
@@ -89,7 +100,17 @@ def _endpoint(
             "unresolved": [],
         },
         "headers": [],
-        "authentication": {"authentication": auth_mechanism or ("jwt" if auth_required else None), "authorization": authorization, "schemes": auth_schemes or [], "required": auth_required, "evidence": [], "unresolved": []},
+        "authentication": {
+            "authentication": auth_mechanism or ("jwt" if auth_required else None),
+            "authorization": authorization,
+            "credential_format": None,
+            "scheme": None,
+            "schemes": auth_schemes or [],
+            "header_semantics": None,
+            "required": auth_required,
+            "evidence": [],
+            "unresolved": [],
+        },
         "security": {"policy": "unknown", "drift": []},
         "behavior": behavior or {"summary": "fixture", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {}},
         "contract_status": contract_status,
@@ -258,6 +279,41 @@ class ApiCompatibilityTests(unittest.TestCase):
 
             self.assertEqual(payload["records"][0]["classification"], "breaking")
             self.assertIn("path_parameter_incompatible_type", [item["code"] for item in payload["records"][0]["findings"]])
+
+    def test_type_and_format_are_compared_independently_for_fields_and_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            _catalog(reference, [_endpoint("POST", "/items", request_fields={"id": ("string", "uuid")}, request_required=["id"], response_fields={"email": ("string", "email")})], repo="reference")
+            _catalog(candidate, [_endpoint("POST", "/items", request_fields={"id": ("string", "date-time")}, request_required=["id"], response_fields={"email": ("string", "uri")})], repo="candidate")
+
+            payload = build_api_compatibility(reference, candidate)
+            codes = [item["code"] for item in payload["records"][0]["findings"]]
+
+            self.assertEqual(payload["records"][0]["classification"], "breaking")
+            self.assertIn("request_field_format_changed", codes)
+            self.assertIn("response_field_format_changed", codes)
+
+            reference_param = {"name": "id", "location": "path", "required": True, "schema": {"type": "string", "format": "uuid"}, "evidence": []}
+            candidate_param = {"name": "id", "location": "path", "required": True, "schema": {"type": "string", "format": "date-time"}, "evidence": []}
+            _catalog(reference, [_endpoint("GET", "/items/{}", parameters=[reference_param])], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/items/{}", parameters=[candidate_param])], repo="candidate")
+            self.assertIn("path_parameter_incompatible_format", [item["code"] for item in build_api_compatibility(reference, candidate)["records"][0]["findings"]])
+
+    def test_format_unknown_when_material_and_same_format_is_same(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            _catalog(reference, [_endpoint("GET", "/items", response_fields={"id": ("string", "uuid")})], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/items", response_fields={"id": ("string", None)})], repo="candidate")
+            unknown = build_api_compatibility(reference, candidate)
+            self.assertEqual(unknown["records"][0]["classification"], "unknown")
+            self.assertIn("response_field_format_unknown", [item["code"] for item in unknown["records"][0]["findings"]])
+
+            _catalog(candidate, [_endpoint("GET", "/items", response_fields={"id": ("string", "uuid")})], repo="candidate")
+            self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "same")
 
     def test_required_query_parameter_added_is_breaking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -434,6 +490,55 @@ class ApiCompatibilityTests(unittest.TestCase):
             _catalog(candidate, [_endpoint("GET", "/items", behavior=additive_behavior)], repo="candidate")
             self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "additive")
 
+    def test_external_side_effect_additions_require_compatibility_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            base = {"summary": "fixture", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {}}
+            unknown_effect = dict(base)
+            unknown_effect["side_effects"] = [{"type": "webhook", "target": "external"}]
+            _catalog(reference, [_endpoint("POST", "/items", behavior=base)], repo="reference")
+            _catalog(candidate, [_endpoint("POST", "/items", behavior=unknown_effect)], repo="candidate")
+            unknown = build_api_compatibility(reference, candidate)
+            self.assertEqual(unknown["records"][0]["classification"], "unknown")
+            self.assertIn("external_side_effect_added_unknown", [item["code"] for item in unknown["records"][0]["findings"]])
+
+            compatible_effect = dict(base)
+            compatible_effect["side_effects"] = [{"type": "webhook", "target": "external", "compatibility": "compatible"}]
+            _catalog(candidate, [_endpoint("POST", "/items", behavior=compatible_effect)], repo="candidate")
+            self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "additive")
+
+            breaking_effect = dict(base)
+            breaking_effect["side_effects"] = [{"type": "webhook", "target": "external", "compatibility": "breaking"}]
+            _catalog(candidate, [_endpoint("POST", "/items", behavior=breaking_effect)], repo="candidate")
+            self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "breaking")
+
+    def test_internal_only_semantic_partial_does_not_block_api_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            behavior = {"summary": "fixture", "semantic_partial_scope": "internal", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {"success": "returns id"}}
+            _catalog(reference, [_endpoint("GET", "/items", behavior=behavior, semantic_status="partial")], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/items", behavior=behavior, semantic_status="partial")], repo="candidate")
+            self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "same")
+
+    def test_external_or_unknown_semantic_partial_blocks_api_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            external = {"summary": "fixture", "semantic_partial_scope": "external", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {}}
+            unknown = {"summary": "fixture", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {}}
+            _catalog(reference, [_endpoint("GET", "/items", behavior=external, semantic_status="partial")], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/items", behavior=external, semantic_status="partial")], repo="candidate")
+            self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "unknown")
+
+            _catalog(reference, [_endpoint("GET", "/items", behavior=unknown, semantic_status="partial")], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/items", behavior=unknown, semantic_status="partial")], repo="candidate")
+            self.assertEqual(build_api_compatibility(reference, candidate)["records"][0]["classification"], "unknown")
+
     def test_inputs_are_traceable_and_policy_changes_comparison_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -450,6 +555,36 @@ class ApiCompatibilityTests(unittest.TestCase):
             self.assertEqual(loose["inputs"]["candidate"]["source_ref"], "main")
             self.assertEqual(len(loose["inputs"]["reference"]["sha256"]), 64)
             self.assertIn("security_drift", loose["summary"])
+
+    def test_summary_contains_complete_output_contract_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference.json"
+            candidate = root / "candidate.json"
+            _catalog(reference, [_endpoint("GET", "/same"), _endpoint("GET", "/removed")], repo="reference")
+            _catalog(candidate, [_endpoint("GET", "/same"), _endpoint("GET", "/added")], repo="candidate")
+
+            summary = build_api_compatibility(reference, candidate)["summary"]
+
+            for key in (
+                "reference_endpoints",
+                "candidate_endpoints",
+                "scoped_reference_endpoints",
+                "required_reference_endpoints",
+                "excluded_reference_endpoints",
+                "same",
+                "additive",
+                "breaking",
+                "unknown",
+                "artifact_equal_endpoints",
+                "observed_equal_endpoints",
+                "removed_endpoints",
+                "added_endpoints",
+                "changed_endpoints",
+                "security_drift",
+                "unresolved",
+            ):
+                self.assertIn(key, summary)
 
     def test_artifact_equal_ignores_key_order_and_volatile_metadata_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

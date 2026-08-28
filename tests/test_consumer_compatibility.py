@@ -9,10 +9,21 @@ from asgard_api_auditor.catalog import endpoint_contract_id
 from asgard_api_auditor.consumer_compatibility import build_consumer_compatibility
 
 
-def _schema(fields: dict[str, str], required: list[str] | None = None) -> dict[str, object]:
+def _schema(
+    fields: dict[str, str | tuple[str, str | None]], required: list[str] | None = None
+) -> dict[str, object]:
+    properties: dict[str, dict[str, str]] = {}
+    for name, value in fields.items():
+        if isinstance(value, tuple):
+            type_name, format_name = value
+            properties[name] = {"type": type_name}
+            if format_name is not None:
+                properties[name]["format"] = format_name
+        else:
+            properties[name] = {"type": value}
     return {
         "type": "object",
-        "properties": {name: {"type": type_name} for name, type_name in fields.items()},
+        "properties": properties,
         "required": required or [],
     }
 
@@ -22,9 +33,9 @@ def _endpoint(
     method: str,
     path: str,
     *,
-    request_fields: dict[str, str] | None = None,
+    request_fields: dict[str, str | tuple[str, str | None]] | None = None,
     request_required: list[str] | None = None,
-    response_fields: dict[str, str] | None = None,
+    response_fields: dict[str, str | tuple[str, str | None]] | None = None,
     response_used: list[str] | None = None,
     auth_required: bool | None = False,
     auth_mechanism: str | None = None,
@@ -70,6 +81,9 @@ def _endpoint(
             "schema": _schema(response_fields, sorted(response_fields)),
             "fields": sorted(response_fields),
             "required_fields": sorted(response_fields),
+            "optional_fields": [],
+            "unknown_requiredness_fields": [],
+            "additional_fields_backward_compatible": None,
             "fields_used_by_consumer": response_used or [],
             "tolerates_additional_fields": tolerates_additional_fields,
             "tolerates_additional_statuses": True,
@@ -78,7 +92,17 @@ def _endpoint(
             "unresolved": [],
         },
         "headers": [],
-        "authentication": {"authentication": auth_mechanism or ("jwt" if auth_required else None), "authorization": authorization, "schemes": auth_schemes or [], "required": auth_required, "evidence": [], "unresolved": []},
+        "authentication": {
+            "authentication": auth_mechanism or ("jwt" if auth_required else None),
+            "authorization": authorization,
+            "credential_format": None,
+            "scheme": None,
+            "schemes": auth_schemes or [],
+            "header_semantics": None,
+            "required": auth_required,
+            "evidence": [],
+            "unresolved": [],
+        },
         "security": {"policy": "unknown", "drift": []},
         "behavior": {"summary": "fixture", "data_access": [], "auth_context": {"consumed_jwt_claims": [], "produced_jwt_claims": []}, "local_calls": [], "outbound_integrations": [], "conditions": [], "side_effects": [], "response_semantics": {}},
         "contract_status": contract_status,
@@ -251,6 +275,41 @@ class ConsumerCompatibilityTests(unittest.TestCase):
             _catalog(provider, [_endpoint("exposed", "GET", "/items/{}", parameters=[provider_path])], repo="provider")
             self.assertIn("path_parameter_type_incompatible", [item["code"] for item in build_consumer_compatibility([consumer], [provider])["records"][0]["checks"]])
 
+    def test_type_and_format_are_compared_independently_for_fields_and_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            consumer = root / "consumer.json"
+            provider = root / "provider.json"
+            _catalog(consumer, [_endpoint("consumed", "POST", "/items", request_fields={"id": ("string", "uuid")}, response_fields={"email": ("string", "email")}, response_used=["email"])], repo="consumer")
+            _catalog(provider, [_endpoint("exposed", "POST", "/items", request_fields={"id": ("string", "date-time")}, response_fields={"email": ("string", "uri")})], repo="provider")
+
+            payload = build_consumer_compatibility([consumer], [provider])
+            codes = [item["code"] for item in payload["records"][0]["checks"]]
+
+            self.assertEqual(payload["records"][0]["status"], "breaking")
+            self.assertIn("request_field_format_incompatible", codes)
+            self.assertIn("response_field_format_incompatible", codes)
+
+            consumer_param = {"name": "id", "location": "path", "required": True, "schema": {"type": "string", "format": "uuid"}, "evidence": []}
+            provider_param = {"name": "id", "location": "path", "required": True, "schema": {"type": "string", "format": "date-time"}, "evidence": []}
+            _catalog(consumer, [_endpoint("consumed", "GET", "/items/{}", parameters=[consumer_param])], repo="consumer")
+            _catalog(provider, [_endpoint("exposed", "GET", "/items/{}", parameters=[provider_param])], repo="provider")
+            self.assertIn("path_parameter_format_incompatible", [item["code"] for item in build_consumer_compatibility([consumer], [provider])["records"][0]["checks"]])
+
+    def test_format_unknown_when_material_and_same_format_is_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            consumer = root / "consumer.json"
+            provider = root / "provider.json"
+            _catalog(consumer, [_endpoint("consumed", "GET", "/items", response_fields={"id": ("string", "uuid")}, response_used=["id"])], repo="consumer")
+            _catalog(provider, [_endpoint("exposed", "GET", "/items", response_fields={"id": ("string", None)})], repo="provider")
+            unknown = build_consumer_compatibility([consumer], [provider])
+            self.assertEqual(unknown["records"][0]["status"], "unknown")
+            self.assertIn("response_field_format_unknown", [item["code"] for item in unknown["records"][0]["checks"]])
+
+            _catalog(provider, [_endpoint("exposed", "GET", "/items", response_fields={"id": ("string", "uuid")})], repo="provider")
+            self.assertEqual(build_consumer_compatibility([consumer], [provider])["records"][0]["status"], "compatible")
+
     def test_consumer_extra_header_requires_provider_acceptance_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -310,6 +369,39 @@ class ConsumerCompatibilityTests(unittest.TestCase):
             self.assertIn("consumer_contract_status_partial", [item["code"] for item in payload["records"][0]["checks"]])
             self.assertIn("provider_semantic_status_partial", [item["code"] for item in payload["records"][0]["checks"]])
 
+    def test_internal_only_semantic_partial_does_not_block_provider_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            consumer = root / "consumer.json"
+            provider = root / "provider.json"
+            consumer_endpoint = _endpoint("consumed", "GET", "/items", response_fields={"id": "string"}, response_used=["id"], semantic_status="partial")
+            provider_endpoint = _endpoint("exposed", "GET", "/items", response_fields={"id": "string"}, semantic_status="partial")
+            consumer_endpoint["behavior"]["semantic_partial_scope"] = "internal"
+            provider_endpoint["behavior"]["semantic_partial_scope"] = "internal"
+            _catalog(consumer, [consumer_endpoint], repo="consumer")
+            _catalog(provider, [provider_endpoint], repo="provider")
+
+            self.assertEqual(build_consumer_compatibility([consumer], [provider])["records"][0]["status"], "compatible")
+
+    def test_external_or_unknown_semantic_partial_blocks_provider_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            consumer = root / "consumer.json"
+            provider = root / "provider.json"
+            consumer_endpoint = _endpoint("consumed", "GET", "/items", response_fields={"id": "string"}, response_used=["id"], semantic_status="partial")
+            provider_endpoint = _endpoint("exposed", "GET", "/items", response_fields={"id": "string"}, semantic_status="partial")
+            consumer_endpoint["behavior"]["semantic_partial_scope"] = "external"
+            provider_endpoint["behavior"]["semantic_partial_scope"] = "external"
+            _catalog(consumer, [consumer_endpoint], repo="consumer")
+            _catalog(provider, [provider_endpoint], repo="provider")
+            self.assertEqual(build_consumer_compatibility([consumer], [provider])["records"][0]["status"], "unknown")
+
+            consumer_endpoint["behavior"].pop("semantic_partial_scope")
+            provider_endpoint["behavior"].pop("semantic_partial_scope")
+            _catalog(consumer, [consumer_endpoint], repo="consumer")
+            _catalog(provider, [provider_endpoint], repo="provider")
+            self.assertEqual(build_consumer_compatibility([consumer], [provider])["records"][0]["status"], "unknown")
+
     def test_inputs_are_traceable_and_policy_changes_compatibility_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -325,6 +417,29 @@ class ConsumerCompatibilityTests(unittest.TestCase):
             self.assertEqual(loose["inputs"]["consumers"][0]["repository_id"], "consumer")
             self.assertEqual(loose["inputs"]["providers"][0]["source_commit"], "a" * 40)
             self.assertEqual(len(loose["inputs"]["consumers"][0]["sha256"]), 64)
+
+    def test_summary_contains_complete_provider_consumer_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            consumer = root / "consumer.json"
+            provider = root / "provider.json"
+            _catalog(consumer, [_endpoint("consumed", "GET", "/a"), _endpoint("consumed", "GET", "/b")], repo="consumer")
+            _catalog(provider, [_endpoint("exposed", "GET", "/a")], repo="provider")
+
+            summary = build_consumer_compatibility([consumer], [provider])["summary"]
+
+            for key in (
+                "total_consumed_dependencies",
+                "required_dependencies",
+                "excluded_dependencies",
+                "compatible",
+                "breaking",
+                "missing",
+                "ambiguous",
+                "unknown",
+                "security_drift",
+            ):
+                self.assertIn(key, summary)
 
     def test_empty_matched_contracts_remain_unknown_not_compatible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
