@@ -560,16 +560,19 @@ def _dart_function_ranges(text: str) -> list[_DartFunctionRange]:
         r"(?:^|[;\}\n])\s*"
         r"(?:[A-Za-z_<>,\?\[\]\s]+\s+)?"
         r"(?P<name>_?[A-Za-z]\w*)\s*"
-        r"\([^;{}]*\)\s*(?:async\s*)?\{",
+        # Dart named parameters use braces inside the parameter list.
+        # Exclude semicolons (abstract declarations) but allow those braces.
+        r"\([^;]*?\)\s*(?:async\s*)?\{",
         re.MULTILINE,
     )
     control_keywords = {"if", "for", "while", "switch", "catch", "do"}
     for match in declaration.finditer(text):
         if match.group("name") in control_keywords:
             continue
-        open_brace = text.find("{", match.start())
-        if open_brace < 0:
-            continue
+        # The declaration regex ends at the function body's opening brace.
+        # Searching from match.start() can select a brace inside a generic
+        # return type/context preceding the declaration and truncate scope.
+        open_brace = match.end() - 1
         close_brace = _matching_brace(text, open_brace)
         if close_brace is None:
             close_brace = len(text)
@@ -722,7 +725,11 @@ def _dart_dio_candidates(masked: str) -> list[_DartCallCandidate]:
     call_pattern = re.compile(
         rf"(?P<receiver>Dio\s*\(\s*\)|(?:this\.)?_?[A-Za-z]\w*(?:\._?[A-Za-z]\w*)*)"
         rf"\.(?P<method>{_METHODS})\s*\(\s*"
-        r"(?:(?P<quote>['\"])(?P<url>.*?)(?P=quote))?",
+        r"(?:"
+        r"(?P<quote>['\"])(?P<url>.*?)(?P=quote)"
+        r"|(?P<base>_?[A-Za-z]\w*)\s*!?\s*\+\s*"
+        r"(?P<suffix_quote>['\"])(?P<suffix>.*?)(?P=suffix_quote)"
+        r")?",
         re.IGNORECASE | re.DOTALL,
     )
     for match in call_pattern.finditer(masked):
@@ -734,7 +741,15 @@ def _dart_dio_candidates(masked: str) -> list[_DartCallCandidate]:
             _DartCallCandidate(
                 receiver=receiver,
                 method=match.group("method"),
-                url=match.group("url"),
+                url=(
+                    match.group("url")
+                    if match.group("url") is not None
+                    else (
+                        f"${match.group('base')}{match.group('suffix')}"
+                        if match.group("base") is not None
+                        else None
+                    )
+                ),
                 offset=match.start(),
             )
         )
